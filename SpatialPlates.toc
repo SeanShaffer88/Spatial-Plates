@@ -1,0 +1,18 @@
+## Interface: 16001
+## Title: Spatial Plates
+## Notes: Non-combat spatial overlay for friendly player nameplates (distance, subzone, indoors/outdoors, underwater). Informational only — never reads health, power, auras, cooldowns, damage, healing, or threat. Degrades gracefully when a value is secret/unreadable.
+## Author: Spatial Plates
+## Version: 1.0.0
+## SavedVariables: SpatialPlatesDB
+## X-Category: Nameplates
+## X-Website: https://github.com/SeanShaffer88/Spatial-Plates
+## X-License: MIT
+
+# Load order matters: Config (defaults + DB + codec + slash + options) ->
+# Presets (partial profile tables) -> Appearance (apply profile to frames) ->
+# Core (events, ticker, overlay lifecycle). All top-level code only defines
+# tables/functions; initialization happens on ADDON_LOADED, so order is safe.
+Config.lua
+Presets.lua
+Appearance.lua
+Core.lua
