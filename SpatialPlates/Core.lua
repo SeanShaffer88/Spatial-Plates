@@ -624,58 +624,21 @@ function SP.IsUnitWanted(unit, profile)
 end
 
 -- ---------------------------------------------------------------------------
--- Marker position (nameplate or feet)
+-- 1.3.0 feet-mode cleanup
 -- ---------------------------------------------------------------------------
 
--- Feet mode asks the client to draw other units' nameplates at their base
--- via the nameplateOtherAtBase CVar (our marker then sits just under the
--- plate). The previous value is saved and restored when feet mode is turned
--- off. If the client has no such CVar, the marker stays at the nameplate.
-local FEET_CVAR = "nameplateOtherAtBase"
-SP._feetActive = false
-
-local function ReadCVar(name)
-  local getter = (C_CVar and C_CVar.GetCVar) or GetCVar
-  local value = SafeCall(getter, name)
-  if IsReadable(value, "string") then return value end
-  return nil
-end
-
-local function WriteCVar(name, value)
-  local setter = (C_CVar and C_CVar.SetCVar) or SetCVar
-  if type(setter) ~= "function" then return false end
-  local ok = pcall(setter, name, value)
-  return ok
-end
-
-function SP.ApplyMarkerPosition()
-  local profile = SP.GetProfile()
+-- 1.3.0 had a "marker at feet" mode that set the nameplateOtherAtBase CVar.
+-- Classic Forever ignores that CVar, so the mode was removed in 1.3.1. Put
+-- back the value it saved, once, outside combat.
+function SP.RestoreFeetCVar()
   local db = SP.EnsureDB()
-  local current = ReadCVar(FEET_CVAR)
-  if current == nil then
-    SP._feetActive = false
-    if profile.markerAtFeet and not SP._feetUnsupportedWarned then
-      SP._feetUnsupportedWarned = true
-      print("|cff33ccffSpatial Plates:|r this client cannot draw nameplates at feet; the marker stays at the nameplate.")
-    end
-    return
+  if db.savedOtherAtBase == nil then return end
+  if IsInCombat() then return end -- retried on the next world/combat-end event
+  local setter = (C_CVar and C_CVar.SetCVar) or SetCVar
+  if type(setter) == "function" then
+    pcall(setter, "nameplateOtherAtBase", db.savedOtherAtBase)
   end
-  if IsInCombat() then
-    -- Nameplate CVars may be locked in combat; apply when combat ends.
-    SP._pendingMarkerApply = true
-    return
-  end
-  SP._pendingMarkerApply = false
-  if profile.markerAtFeet then
-    if current ~= "1" then
-      if db.savedOtherAtBase == nil then db.savedOtherAtBase = current end
-      WriteCVar(FEET_CVAR, "1")
-    end
-  elseif db.savedOtherAtBase ~= nil then
-    WriteCVar(FEET_CVAR, db.savedOtherAtBase)
-    db.savedOtherAtBase = nil
-  end
-  SP._feetActive = profile.markerAtFeet == true and ReadCVar(FEET_CVAR) == "1"
+  db.savedOtherAtBase = nil
 end
 
 -- Update one unit's overlay: compute fields, apply visibility, set text.
@@ -769,10 +732,6 @@ local function UpdateOverlay(unit)
   local anchorTo = profile.anchorTo or "TOP"
   local offsetX = profile.offsetX or 0
   local offsetY = profile.offsetY or 0
-  if SP._feetActive then
-    -- Nameplate is drawn at the unit's base: hang the marker just under it.
-    anchor, anchorTo, offsetY = "BOTTOM", "TOP", 0
-  end
   local anchorState = overlay._spAnchorState
   if not anchorState or anchorState.parent ~= parent
     or anchorState.anchor ~= anchor or anchorState.anchorTo ~= anchorTo
@@ -955,7 +914,7 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
     -- DB is initialized by Config.lua's ADDON_LOADED handler; ensure here too
     -- (handlers run in registration order, but be defensive).
     SP.EnsureDB()
-    pcall(SP.ApplyMarkerPosition)
+    pcall(SP.RestoreFeetCVar)
     ScanNameplates()
     RestartTicker()
     SP.RefreshAllOverlays()
@@ -993,8 +952,8 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
     if event ~= "PLAYER_REGEN_DISABLED" and event ~= "PLAYER_REGEN_ENABLED" then
       SP.InvalidateEligibility()
     end
-    if event == "PLAYER_ENTERING_WORLD" or (event == "PLAYER_REGEN_ENABLED" and SP._pendingMarkerApply) then
-      pcall(SP.ApplyMarkerPosition)
+    if event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_REGEN_ENABLED" then
+      pcall(SP.RestoreFeetCVar)
     end
     ScanNameplates()
     SP.RefreshAllOverlays()
