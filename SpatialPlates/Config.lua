@@ -11,7 +11,7 @@
 -- Namespace table. Global name uses the required "SpatialPlates_" prefix.
 SpatialPlates = SpatialPlates or {}
 local SP = SpatialPlates
-SP._VERSION = "1.2.0"
+SP._VERSION = "1.3.0"
 SP._PROFILE_VERSION = 1
 
 -- ---------------------------------------------------------------------------
@@ -70,6 +70,7 @@ local function DefaultProfile()
     showFriendsList = true, -- players on your friends list
     showEnemyPlayers = true, -- non-friendly players (opposite faction / PvP)
     showEnemyNPCs = true, -- attackable NPCs (hostile and neutral mobs)
+    markerAtFeet = false, -- draw nameplates (and the marker) at units' feet
 
     -- Font
     font = "default", -- builtin value or custom path
@@ -78,7 +79,7 @@ local function DefaultProfile()
     fontOutline = "outline", -- none | outline | thick
     fontColor = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 },
     fontAlpha = 1.0,
-    colorMode = "custom", -- custom | class | reaction | perField
+    colorMode = "reaction", -- custom | class | reaction | perField
     fieldColors = {
       distance = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 },
       subzone = { r = 0.85, g = 0.85, b = 0.85, a = 1.0 },
@@ -224,6 +225,25 @@ function SP.EnsureDB()
     or not db.autoThemeAddon:match("^[%w_]+$") then
     db.autoThemeAddon = nil
   end
+  -- Saved nameplateOtherAtBase value to restore when feet mode turns off.
+  if db.savedOtherAtBase ~= nil and (type(db.savedOtherAtBase) ~= "string"
+    or not db.savedOtherAtBase:match("^%d$")) then
+    db.savedOtherAtBase = nil
+  end
+  -- 1.3.0: reaction colors became the default. Switch profiles that still
+  -- use the untouched old default (custom mode, plain white text) once.
+  if db.reactionColorMigrated ~= true then
+    local function Migrate(profile)
+      local c = type(profile) == "table" and profile.fontColor
+      if profile and profile.colorMode == "custom" and type(c) == "table"
+        and c.r == 1 and c.g == 1 and c.b == 1 then
+        profile.colorMode = "reaction"
+      end
+    end
+    Migrate(db.profile)
+    for _, profile in pairs(db.charProfiles) do Migrate(profile) end
+    db.reactionColorMigrated = true
+  end
   -- Fill any missing profile keys from defaults (forward-compatible).
   local defaults = DefaultProfile()
   for k, v in pairs(defaults) do
@@ -323,7 +343,7 @@ function SP.ValidateProfile(p)
   Bool("hideWhenNameplateHidden"); Bool("hideWhenUnitNotVisible")
   Bool("hideBeyondDistance"); Bool("hideInInstances"); Bool("hideInOpenWorld")
   Bool("showGlobal"); Bool("showParty"); Bool("showFriendsList")
-  Bool("showEnemyPlayers"); Bool("showEnemyNPCs")
+  Bool("showEnemyPlayers"); Bool("showEnemyNPCs"); Bool("markerAtFeet")
   Bool("clampToScreen"); Bool("autoDetect"); Bool("autoThemeMatch"); Bool("debug")
 
   if not ConfigReadable(p.filter, "string") or not VALID_FILTERS[p.filter] then p.filter = d.filter end
@@ -466,7 +486,7 @@ local EXPORT_KEYS = {
   showIndoors = "bool", showUnderwater = "bool", showBearing = "bool",
   filter = "str", font = "str",
   showGlobal = "bool", showParty = "bool", showFriendsList = "bool",
-  showEnemyPlayers = "bool", showEnemyNPCs = "bool", customFontPath = "str",
+  showEnemyPlayers = "bool", showEnemyNPCs = "bool", markerAtFeet = "bool", customFontPath = "str",
   fontSize = "num", fontOutline = "str", fontAlpha = "num",
   colorMode = "str", sameSubzoneText = "str",
   bgEnabled = "bool", bgEdgeSize = "num", bgInset = "num",
@@ -654,6 +674,7 @@ local function PrintHelp()
   print("  /splates friendslist [on|off] - show on friends-list players")
   print("  /splates enemyplayers [on|off] - show on enemy players")
   print("  /splates enemynpcs [on|off] - show on attackable NPCs")
+  print("  /splates feet [on|off]     - put the marker at units' feet")
   print("  /splates theme <name>      - apply a theme preset")
   print("  /splates theme auto        - detect and apply the loaded addon match now")
   print("  /splates config            - open options panel")
@@ -715,6 +736,9 @@ local function HandleSlash(msg)
   elseif cmd == "friendslist" then ToggleField("showFriendsList", "friendslist")
   elseif cmd == "enemyplayers" then ToggleField("showEnemyPlayers", "enemyplayers")
   elseif cmd == "enemynpcs" then ToggleField("showEnemyNPCs", "enemynpcs")
+  elseif cmd == "feet" then
+    ToggleField("markerAtFeet", "feet")
+    if SP.ApplyMarkerPosition then pcall(SP.ApplyMarkerPosition) end
   elseif cmd == "bearing" then
     print("|cff33ccffSpatial Plates:|r bearing unavailable: no safe non-secret API on this client")
   elseif cmd == "filter" then
@@ -843,6 +867,7 @@ local function MakeCheck(parent, text, x, y, key)
     if key == "autoThemeMatch" and checked and SP.AutoMatchNameplateTheme then
       SP.AutoMatchNameplateTheme()
     end
+    if key == "markerAtFeet" and SP.ApplyMarkerPosition then pcall(SP.ApplyMarkerPosition) end
     if SP.RefreshPreview then SP.RefreshPreview() end
   end)
   c._key = key
@@ -1012,6 +1037,7 @@ local function BuildOptionsPanel()
     y = y - 24
   end
   AddCheck("Enabled", "enabled")
+  AddCheck("Marker at feet (moves nameplates)", "markerAtFeet")
   AddCheck("Show distance", "showDistance")
   AddCheck("Show same map / map name", "showSubzone")
   AddCheck("Show indoors/outdoors", "showIndoors")

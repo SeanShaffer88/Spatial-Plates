@@ -16,6 +16,7 @@ ADDON_FILES = (
     "Config.lua",
     "Presets.lua",
     "Appearance.lua",
+    "Range.lua",
     "Core.lua",
     "Minimap.lua",
 )

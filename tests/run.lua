@@ -54,7 +54,7 @@ local function newFrame(name, parent)
   frames[#frames + 1] = frame
   function frame:RegisterEvent(event) self._events = self._events or {}; self._events[event] = true end
   function frame:SetScript(script, callback) self._scripts[script] = callback end
-  function frame:SetPoint(...) self._pointCalls = self._pointCalls + 1 end
+  function frame:SetPoint(...) self._pointCalls = self._pointCalls + 1; self._lastPoint = { ... } end
   function frame:ClearAllPoints() end
   function frame:SetWidth(value) self._width = value end
   function frame:SetHeight(value) self._height = value end
@@ -196,6 +196,7 @@ RAID_CLASS_COLORS = { MAGE = { r = 0.3, g = 0.7, b = 1.0 } }
 dofile("SpatialPlates/Config.lua")
 dofile("SpatialPlates/Presets.lua")
 dofile("SpatialPlates/Appearance.lua")
+dofile("SpatialPlates/Range.lua")
 dofile("SpatialPlates/Core.lua")
 Minimap = newFrame("Minimap", UIParent)
 UISpecialFrames = {}
@@ -756,6 +757,186 @@ test("MM1 minimap button opens mode popup on left or right click and toggles mod
   equal(SpatialPlatesDB.minimap.hide, true)
   SlashCmdList.SPATIALPLATES("minimap on")
   expect(button:IsShown())
+end)
+
+-- Spellbook / spell-range mocks for the finer range steps.
+local function InstallSpellbook(spells)
+  -- spells: list of { id, minRange, maxRange, helpful, harmful }
+  local byId = {}
+  for _, sp in ipairs(spells) do byId[sp.id] = sp end
+  C_SpellBook = {
+    GetNumSpellBookSkillLines = function() return 1 end,
+    GetSpellBookSkillLineInfo = function(line)
+      return { itemIndexOffset = 0, numSpellBookItems = #spells, isGuild = false }
+    end,
+    GetSpellBookItemInfo = function(slot)
+      local sp = spells[slot]
+      return sp and { itemType = 1, spellID = sp.id, isPassive = false, isOffSpec = false } or nil
+    end,
+  }
+  C_Spell = {
+    GetSpellInfo = function(id)
+      local sp = byId[id]
+      return sp and { minRange = sp.minRange, maxRange = sp.maxRange, spellID = id } or nil
+    end,
+    IsSpellHelpful = function(id) return byId[id] and byId[id].helpful or false end,
+    IsSpellHarmful = function(id) return byId[id] and byId[id].harmful or false end,
+    IsSpellInRange = function(id, unit)
+      local sp, yards = byId[id], interactRange[unit]
+      if not sp or yards == nil then return nil end
+      return yards <= sp.maxRange
+    end,
+  }
+end
+local function RemoveSpellbook()
+  C_SpellBook, C_Spell = nil, nil
+  SP.RebuildRangeSteps()
+end
+
+test("RANGE1 known spells add finer range steps for friendly and hostile units", function()
+  resetProfile()
+  InstallSpellbook({
+    { id = 1, minRange = 0, maxRange = 20, harmful = true },
+    { id = 2, minRange = 0, maxRange = 30, harmful = true },
+    { id = 3, minRange = 0, maxRange = 40, helpful = true },
+    { id = 4, minRange = 8, maxRange = 35, harmful = true }, -- min range: ignored
+  })
+  CheckInteractDistance = MockCheckInteractDistance
+  SP.RebuildRangeSteps()
+  setUnit("hostile", { isPlayer = false, friendly = false, enemy = true, visible = true })
+  setUnit("ally", { isPlayer = true, friendly = true, visible = true })
+  interactRange.hostile = 15
+  equal(SP.EstimateRange("hostile"), "<20")
+  interactRange.hostile = 29
+  equal(SP.EstimateRange("hostile"), "<30")
+  interactRange.hostile = 33
+  equal(SP.EstimateRange("hostile"), ">30", "35y min-range spell must not be used")
+  interactRange.hostile = 5
+  equal(SP.EstimateRange("hostile"), "<10", "search walks back down")
+  interactRange.ally = 35
+  equal(SP.EstimateRange("ally"), "<40", "helpful spells range friendly units")
+  interactRange.ally = 50
+  equal(SP.EstimateRange("ally"), ">40")
+  interactRange.hostile, interactRange.ally = nil, nil
+  CheckInteractDistance = nil
+  RemoveSpellbook()
+end)
+
+test("RANGE2 erroring or nil range answers are skipped, never shown as out of range", function()
+  resetProfile()
+  InstallSpellbook({ { id = 1, minRange = 0, maxRange = 30, harmful = true } })
+  SP.RebuildRangeSteps()
+  setUnit("hostile", { isPlayer = false, friendly = false, enemy = true, visible = true })
+  CheckInteractDistance = function() error("restricted") end
+  interactRange.hostile = 12
+  equal(SP.EstimateRange("hostile"), "<30", "spell step still answers")
+  C_Spell.IsSpellInRange = function() return nil end
+  equal(SP.EstimateRange("hostile"), nil, "no readable step: no estimate")
+  interactRange.hostile = nil
+  CheckInteractDistance = nil
+  RemoveSpellbook()
+end)
+
+test("COMBAT2 estimated ranges hide in combat instead of freezing", function()
+  resetProfile(); clearOverlays()
+  local p = SP.GetProfile(); p.showSubzone = false
+  setUnit("stranger", { isPlayer = true, friendly = false, enemy = true, visible = true, distanceSq = 0 })
+  mapByUnit.stranger = nil
+  CheckInteractDistance = MockCheckInteractDistance
+  interactRange.stranger = 8
+  currentPlate = CreateFrame("Frame", "PlateCOMBAT2", UIParent); currentPlate.unit = "stranger"
+  fire("NAME_PLATE_UNIT_ADDED", "stranger")
+  local overlay = SP._overlays.stranger
+  expect(overlay:IsShown() and overlay._spText:GetText():find("<10y", 1, true))
+  combatState = true
+  CheckInteractDistance = function() return nil end
+  SP.RefreshAllOverlays()
+  expect(not overlay:IsShown(), "stale estimate must not stay on screen in combat")
+  CheckInteractDistance = MockCheckInteractDistance
+  SP.RefreshAllOverlays()
+  expect(overlay:IsShown(), "estimate that still answers in combat is shown")
+  combatState = false
+  clearOverlays(); interactRange.stranger = nil; CheckInteractDistance = nil
+end)
+
+test("CACHE1 eligibility is cached until an event, profile change or TTL expiry", function()
+  resetProfile(); clearOverlays()
+  local clock = 100
+  GetTime = function() return clock end
+  local p = SP.GetProfile()
+  setUnit("duelist", { isPlayer = true, friendly = true, visible = true, distanceSq = 16, map = 100 })
+  p.showGlobal = false; p.showParty = false; p.showFriendsList = false
+  currentPlate = CreateFrame("Frame", "PlateCACHE1", UIParent); currentPlate.unit = "duelist"
+  expect(not SP.IsUnitWanted("duelist", p), "friendly with friendly modes off")
+  units.duelist.friendly = false; units.duelist.enemy = true -- duel starts
+  expect(not SP.IsUnitWanted("duelist", p), "cached until something invalidates it")
+  fire("UNIT_FACTION", "duelist") -- no overlay yet: entry stays cached
+  SP.InvalidateEligibility("duelist")
+  expect(SP.IsUnitWanted("duelist", p), "re-evaluated after invalidation")
+  units.duelist.friendly = true; units.duelist.enemy = false
+  expect(SP.IsUnitWanted("duelist", p), "cached again")
+  clock = clock + 3
+  expect(not SP.IsUnitWanted("duelist", p), "TTL expiry re-evaluates")
+  p.showGlobal = true
+  expect(SP.IsUnitWanted("duelist", p), "profile change bypasses the cache")
+  fire("NAME_PLATE_UNIT_ADDED", "duelist")
+  local overlay = SP._overlays.duelist
+  expect(overlay and overlay:IsShown())
+  p.showGlobal = false; SP.RefreshAllOverlays()
+  expect(not overlay:IsShown(), "direct profile edits take effect immediately")
+  GetTime = nil
+  clearOverlays()
+end)
+
+test("FEET1 feet mode sets the nameplate CVar, re-anchors, and restores on off", function()
+  resetProfile(); clearOverlays()
+  local cvars = { nameplateOtherAtBase = "0" }
+  C_CVar = {
+    GetCVar = function(name) return cvars[name] end,
+    SetCVar = function(name, value) cvars[name] = value; return true end,
+  }
+  SP.SetProfileValue("markerAtFeet", true); SP.ApplyMarkerPosition()
+  equal(cvars.nameplateOtherAtBase, "1")
+  equal(SpatialPlatesDB.savedOtherAtBase, "0")
+  expect(SP._feetActive)
+  currentPlate = CreateFrame("Frame", "PlateFEET1", UIParent); currentPlate.unit = "friend"
+  fire("NAME_PLATE_UNIT_ADDED", "friend")
+  local overlay = SP._overlays.friend
+  expect(overlay and overlay._lastPoint, "overlay anchored")
+  equal(overlay._lastPoint[1], "TOP"); equal(overlay._lastPoint[3], "BOTTOM")
+  SP.SetProfileValue("markerAtFeet", false); SP.ApplyMarkerPosition()
+  equal(cvars.nameplateOtherAtBase, "0", "previous value restored")
+  equal(SpatialPlatesDB.savedOtherAtBase, nil)
+  expect(not SP._feetActive)
+  -- Combat defers the CVar change until combat ends.
+  combatState = true
+  SP.SetProfileValue("markerAtFeet", true); SP.ApplyMarkerPosition()
+  equal(cvars.nameplateOtherAtBase, "0", "no CVar write in combat")
+  combatState = false
+  fire("PLAYER_REGEN_ENABLED")
+  equal(cvars.nameplateOtherAtBase, "1", "applied after combat")
+  -- A client without the CVar: no error, marker stays at the nameplate.
+  cvars.nameplateOtherAtBase = nil
+  expect(pcall(SP.ApplyMarkerPosition))
+  expect(not SP._feetActive)
+  C_CVar = nil
+  clearOverlays()
+end)
+
+test("COLOR1 reaction colors are the default and untouched old profiles migrate once", function()
+  SpatialPlatesDB = nil
+  equal(SP.GetProfile().colorMode, "reaction")
+  SpatialPlatesDB = {
+    profile = { colorMode = "custom", fontColor = { r = 1, g = 1, b = 1, a = 1 } },
+    charProfiles = { ["A-B"] = { colorMode = "custom", fontColor = { r = 1, g = 0, b = 0, a = 1 } } },
+  }
+  SP.EnsureDB()
+  equal(SpatialPlatesDB.profile.colorMode, "reaction", "default white custom migrates")
+  equal(SpatialPlatesDB.charProfiles["A-B"].colorMode, "custom", "customized color kept")
+  SpatialPlatesDB.profile.colorMode = "custom"
+  SP.EnsureDB()
+  equal(SpatialPlatesDB.profile.colorMode, "custom", "migration runs only once")
+  resetProfile()
 end)
 
 if failed > 0 then
