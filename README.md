@@ -2,7 +2,7 @@
 
 A lightweight, purely informational World of Warcraft addon (Classic Forever) that adds a small spatial-semantics overlay to **friendly player nameplates** — approximate distance in yards, same-map/map-name indicator, indoors/outdoors, and underwater status — so healers, raid leads, and party members can understand where friendly players are without staring at raid frames.
 
-> **Informational only.** Spatial Plates never reads or computes health, power, auras, cooldowns, damage, healing, threat, or any other combat data. It never uses the combat log, never automates decisions, and never hooks insecure combat functions. If a value is secret/unreadable, the field hides (or freezes at its last readable value in combat). It never errors and never taints.
+> **Informational only.** The addon code does not call health, power, aura, cooldown, damage, healing, threat, or combat-log APIs; it does not automate decisions or hook insecure combat functions. Secret/unreadable spatial values are omitted or the last readable display is frozen in combat. Calls are guarded and the addon is designed to fail closed where possible, but no Lua addon can guarantee zero errors or taint on every client build; use the live-client checklist before release.
 
 ## Installation
 
@@ -83,7 +83,7 @@ or use the options panel field **Custom parent func**. The function is called as
 
 ### Auto-detection (optional, off by default)
 
-Enable **Auto-detect nameplate addons** in the options panel to allow read-only checks of known global names (Plater, KuiNameplates, etc.). Detection is best-effort, never errors when absent, and never modifies another addon's frames — Spatial Plates only creates its own child overlay frame.
+Enable **Auto-detect nameplate addons** in the options panel to allow read-only checks of known global names (Plater, KuiNameplates, etc.). Detection is best-effort and guarded when absent; Spatial Plates does not write bookkeeping fields to another addon's frames and only parents its own overlay as a child.
 
 ## Safety & secret-value rules
 
@@ -91,7 +91,7 @@ Enable **Auto-detect nameplate addons** in the options panel to allow read-only 
 - **Guarded reads.** Every spatial call (`UnitDistanceSquared`, `C_Map.*`, `UnitIsSubmerged`, etc.) is wrapped in `pcall` + type checks + `issecretvalue` checks (when available). Unreadable values hide the field.
 - **In-combat freeze.** If a value becomes secret/unreadable while in combat, the last known non-secret display is frozen instead of cleared. Nothing is computed on secrets.
 - **Throttled updates.** A ticker (default 0.3s, configurable 0.1–2.0s) refreshes tracked friendly nameplates. Font, backdrop, size, and color are reapplied only after a profile revision; unchanged text and anchor points are also left alone.
-- **Cleanup.** `NAME_PLATE_UNIT_REMOVED` hides and releases overlays; no leaks.
+- **Cleanup.** `NAME_PLATE_UNIT_REMOVED` hides, detaches, and drops the addon's references to the overlay; repeated token reuse is covered by mock tests, with actual client lifecycle still requiring smoke testing.
 - **Debug mode** prints only *why* a field hid (e.g. `distance hidden: different map`), never secret values.
 
 ## Files
@@ -106,7 +106,18 @@ Enable **Auto-detect nameplate addons** in the options panel to allow read-only 
 
 Load order in the TOC is `Config.lua → Presets.lua → Appearance.lua → Core.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
 
-## Testing checklist
+## Testing
+
+Run the local mocked suite and static check from the repository root:
+
+```sh
+lua tests/run.lua
+python3 tests/check_static.py
+```
+
+The Lua suite uses a deliberately small fake WoW API; it has no third-party Lua test framework dependency. The static script checks the TOC/load order and scans addon Lua sources for prohibited combat-data/secure-hook API names.
+
+## In-client testing checklist
 
 Mocked Lua tests and static checks can verify control flow, but they do not reproduce the WoW client. **A live Classic Forever client smoke test has not been run in this workspace.** Before release, verify the current interface number and run the checks below in the target client, especially friend-list API behavior and repeated nameplate-token reuse.
 

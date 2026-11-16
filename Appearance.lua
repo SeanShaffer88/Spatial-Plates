@@ -55,11 +55,13 @@ end
 -- non-secret API; still guarded with pcall + type checks.
 function SP.GetClassColor(unit)
   if not unit or not UnitClass then return nil end
-  local ok, _, _, classId = pcall(UnitClass, unit)
-  if not ok or type(classId) ~= "string" then return nil end
+  -- UnitClass returns localized class name, class-file token, then numeric
+  -- class ID on current clients. RAID_CLASS_COLORS is keyed by the token.
+  local ok, _, classToken = pcall(UnitClass, unit)
+  if not ok or not SP.IsReadable(classToken, "string") then return nil end
   local colors = RAID_CLASS_COLORS
   if type(colors) ~= "table" then return nil end
-  local c = colors[classId]
+  local c = colors[classToken]
   if type(c) ~= "table" then return nil end
   return { r = c.r or 1, g = c.g or 1, b = c.b or 1, a = 1 }
 end
@@ -69,9 +71,13 @@ end
 function SP.GetReactionColor(unit)
   if not unit then return { r = 1, g = 1, b = 1, a = 1 } end
   local okFriend, isFriend = pcall(UnitIsFriend, "player", unit)
-  if okFriend and isFriend == true then return { r = 0.4, g = 1.0, b = 0.4, a = 1 } end
+  if okFriend and SP.IsReadable(isFriend, "boolean") and isFriend == true then
+    return { r = 0.4, g = 1.0, b = 0.4, a = 1 }
+  end
   local okEnemy, isEnemy = pcall(UnitIsEnemy, "player", unit)
-  if okEnemy and isEnemy == true then return { r = 1.0, g = 0.3, b = 0.3, a = 1 } end
+  if okEnemy and SP.IsReadable(isEnemy, "boolean") and isEnemy == true then
+    return { r = 1.0, g = 0.3, b = 0.3, a = 1 }
+  end
   return { r = 1.0, g = 0.9, b = 0.4, a = 1 }
 end
 
@@ -102,18 +108,59 @@ end
 -- Text formatting
 -- ---------------------------------------------------------------------------
 
--- Substitute {d}, {zone}, {env}, {water}, {dir} placeholders in a template.
--- `values` maps placeholder -> display string (already sanitized by Core).
--- Missing values leave the placeholder untouched so Core can decide to hide.
-function SP.FormatTemplate(template, values)
-  if type(template) ~= "string" then return "" end
-  local out = template
-  for key, val in pairs(values or {}) do
-    if type(val) == "string" and val ~= "" then
-      out = out:gsub("{" .. key .. "}", val)
+local function SanitizeTemplate(template)
+  template = template:sub(1, 256)
+  -- WoW FontStrings interpret pipe-prefixed rich-text escapes. Preserve the
+  -- intentional spaced ` | ` separator, but escape other pipe sequences so
+  -- imported templates cannot inject colors, links, or textures.
+  local out = {}
+  for i = 1, #template do
+    local ch = template:sub(i, i)
+    if ch == "|" then
+      local prev = i > 1 and template:sub(i - 1, i - 1) or ""
+      local nextc = i < #template and template:sub(i + 1, i + 1) or ""
+      if prev:match("%s") and nextc:match("%s") then
+        out[#out + 1] = "|"
+      else
+        out[#out + 1] = "||"
+      end
+    elseif ch:byte() < 32 and ch ~= "\t" then
+      out[#out + 1] = " "
+    else
+      out[#out + 1] = ch
     end
   end
-  return out
+  return table.concat(out)
+end
+
+local function EscapeDynamicText(value)
+  local text = tostring(value):gsub("|", "||")
+  return (text:gsub("[%z\1-\8\11\12\14-\31]", " "))
+end
+
+local function ColorizeField(profile, field, value)
+  if profile.colorMode ~= "perField" or value == "" then return value end
+  local color = SP.ResolveTextColor(profile, field, nil)
+  local a = math.floor((color.a or 1) * 255 + 0.5)
+  local r = math.floor((color.r or 1) * 255 + 0.5)
+  local g = math.floor((color.g or 1) * 255 + 0.5)
+  local b = math.floor((color.b or 1) * 255 + 0.5)
+  return string.format("|c%02x%02x%02x%02x%s|r", a, r, g, b, value)
+end
+
+-- Substitute {d}, {zone}, {env}, {water}, {dir} placeholders. Dynamic
+-- strings are escaped and substitutions use callbacks so percent signs in a
+-- map/name template cannot be treated as gsub replacement directives.
+function SP.FormatTemplate(template, values)
+  if type(template) ~= "string" then return "" end
+  local out = SanitizeTemplate(template)
+  for key, val in pairs(values or {}) do
+    if type(key) == "string" and type(val) == "string" and val ~= "" then
+      local replacement = EscapeDynamicText(val):sub(1, 256)
+      out = out:gsub("{" .. key .. "}", function() return replacement end)
+    end
+  end
+  return out:sub(1, 512)
 end
 
 -- Build the combined display string from per-field values.
@@ -127,7 +174,7 @@ function SP.BuildCombinedText(profile, fields)
   local order = { "distance", "subzone", "indoors", "underwater", "bearing" }
   for _, key in ipairs(order) do
     if type(fields[key]) == "string" and fields[key] ~= "" then
-      parts[#parts + 1] = fields[key]
+      parts[#parts + 1] = ColorizeField(profile, key, fields[key])
     end
   end
   if #parts == 0 then return "" end
@@ -157,20 +204,28 @@ function SP.BuildCombinedText(profile, fields)
       end
     end
     if allAvailable then
-      local rendered = combined
-        :gsub("{d}", map.d)
-        :gsub("{zone}", map.zone)
-        :gsub("{env}", map.env)
-        :gsub("{water}", map.water)
-        :gsub("{dir}", map.dir)
-      if not rendered:find("{") then
-        -- Collapse accidental double separators from empty fields.
-        rendered = rendered:gsub("%s*|%s*|%s*", " | "):gsub("^%s*|%s*", ""):gsub("%s*|%s*$", "")
-        if rendered ~= "" then return rendered end
+      local fieldForPlaceholder = {
+        d = "distance", zone = "subzone", env = "indoors",
+        water = "underwater", dir = "bearing",
+      }
+      local replacements = {}
+      for placeholder, value in pairs(map) do
+        local field = fieldForPlaceholder[placeholder]
+        replacements[placeholder] = ColorizeField(profile, field, value)
+      end
+      local rendered = SanitizeTemplate(combined)
+      for placeholder, value in pairs(replacements) do
+        rendered = rendered:gsub("{" .. placeholder .. "}", function() return value end)
+      end
+      if not rendered:find("{") and rendered ~= "" then
+        -- All referenced fields are known readable here, so no separator
+        -- cleanup is needed. Avoid applying pipe patterns to generated
+        -- per-field color tags, which are valid FontString markup.
+        return rendered:sub(1, 1024)
       end
     end
   end
-  return table.concat(parts, " | ")
+  return table.concat(parts, " | "):sub(1, 1024)
 end
 
 -- ---------------------------------------------------------------------------
@@ -271,7 +326,7 @@ function SP.ApplyAppearanceToFrame(overlay, text, unit)
     end
   end)
   if not ok then
-    SP.DebugPrint("ApplyAppearanceToFrame failed: " .. tostring(err))
+    SP.DebugPrint("appearance application failed")
   end
 end
 
@@ -290,7 +345,7 @@ function SP.ApplyAllAppearances()
         if ok then
           overlay._spAppearanceRevision = revision
         else
-          SP.DebugPrint("ApplyAllAppearances unit failed: " .. tostring(err))
+          SP.DebugPrint("appearance refresh for overlay failed")
         end
       end
     end

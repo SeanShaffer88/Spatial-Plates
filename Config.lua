@@ -35,6 +35,12 @@ SP.VALID_COLOR_MODES = VALID_COLOR_MODES
 local VALID_OUTLINES = { none = true, outline = true, thick = true }
 SP.VALID_OUTLINES = VALID_OUTLINES
 
+local VALID_STRATA = {
+  BACKGROUND = true, LOW = true, MEDIUM = true, HIGH = true,
+  DIALOG = true, FULLSCREEN = true, FULLSCREEN_DIALOG = true, TOOLTIP = true,
+}
+SP.VALID_STRATA = VALID_STRATA
+
 -- Built-in font choices. The value is a font path usable with SetFont.
 -- "default" falls back to the client's default UI font at runtime.
 SP.BUILTIN_FONTS = {
@@ -168,8 +174,30 @@ local function GetCharKey()
 end
 SP.GetCharKey = GetCharKey
 
--- Ensure SpatialPlatesDB exists and has the expected shape. Never errors:
--- any malformed saved data is replaced with defaults.
+-- Copy profile/SavedVariables tables without sharing nested color subtables
+-- between account and character profiles. A depth limit and seen map make
+-- malformed cyclic/deep tables harmless.
+local function DeepCopy(value, seen, depth)
+  if type(value) ~= "table" then return value end
+  seen = seen or {}
+  depth = depth or 0
+  if depth >= 16 then return nil end
+  if seen[value] then return seen[value] end
+  local copy = {}
+  seen[value] = copy
+  for k, v in pairs(value) do
+    if type(k) == "string" or type(k) == "number" then
+      local copied = DeepCopy(v, seen, depth + 1)
+      if copied ~= nil then copy[k] = copied end
+    end
+  end
+  return copy
+end
+SP.DeepCopy = DeepCopy
+
+-- Ensure SpatialPlatesDB exists and has the expected shape. Common malformed
+-- saved-data cases are normalized to defaults; client/runtime guarantees are
+-- intentionally not assumed.
 function SP.EnsureDB()
   if type(SpatialPlatesDB) ~= "table" then
     SpatialPlatesDB = DefaultDB()
@@ -179,7 +207,11 @@ function SP.EnsureDB()
   if type(db.profile) ~= "table" then db.profile = DefaultProfile() end
   if type(db.charProfiles) ~= "table" then db.charProfiles = {} end
   if type(db.accountWide) ~= "boolean" then db.accountWide = true end
-  if type(db.version) ~= "number" then db.version = SP._PROFILE_VERSION end
+  if type(db.version) ~= "number" or db.version ~= db.version then db.version = SP._PROFILE_VERSION end
+  if type(db.autoThemeAddon) ~= "string" or #db.autoThemeAddon > 64
+    or not db.autoThemeAddon:match("^[%w_]+$") then
+    db.autoThemeAddon = nil
+  end
   -- Fill any missing profile keys from defaults (forward-compatible).
   local defaults = DefaultProfile()
   for k, v in pairs(defaults) do
@@ -204,17 +236,7 @@ function SP.GetProfile()
   local key = GetCharKey()
   if type(db.charProfiles[key]) ~= "table" then
     -- First use of this character: seed from account-wide profile.
-    local copy = {}
-    for k, v in pairs(db.profile) do
-      if type(v) == "table" then
-        local t = {}
-        for kk, vv in pairs(v) do t[kk] = vv end
-        copy[k] = t
-      else
-        copy[k] = v
-      end
-    end
-    db.charProfiles[key] = copy
+    db.charProfiles[key] = DeepCopy(db.profile) or DefaultProfile()
   end
   return db.charProfiles[key]
 end
@@ -223,8 +245,21 @@ end
 -- Validation helpers
 -- ---------------------------------------------------------------------------
 
+local function ConfigReadable(value, expectedType)
+  if value == nil or (expectedType and type(value) ~= expectedType) then return false end
+  if type(SP.IsReadable) == "function" then
+    local ok, readable = pcall(SP.IsReadable, value, expectedType)
+    return ok and readable == true
+  end
+  if type(issecretvalue) == "function" then
+    local ok, isSecret = pcall(issecretvalue, value)
+    if not ok or isSecret == true then return false end
+  end
+  return true
+end
+
 local function ClampNumber(v, lo, hi, fallback)
-  if type(v) ~= "number" then return fallback end
+  if not ConfigReadable(v, "number") then return fallback end
   if v ~= v then return fallback end -- NaN guard
   if v < lo then return lo end
   if v > hi then return hi end
@@ -233,7 +268,7 @@ end
 SP.ClampNumber = ClampNumber
 
 local function ClampColor(c, fallback)
-  if type(c) ~= "table" then return { r = fallback.r, g = fallback.g, b = fallback.b, a = fallback.a } end
+  if not ConfigReadable(c, "table") then return { r = fallback.r, g = fallback.g, b = fallback.b, a = fallback.a } end
   return {
     r = ClampNumber(c.r, 0, 1, fallback.r),
     g = ClampNumber(c.g, 0, 1, fallback.g),
@@ -255,17 +290,17 @@ SP.IsValidFontPath = IsValidFontPath
 -- Unknown keys are preserved (forward compatibility) but known keys are
 -- type-checked and clamped so a corrupt SavedVariable can never break the UI.
 function SP.ValidateProfile(p)
-  if type(p) ~= "table" then return DefaultProfile() end
+  if not ConfigReadable(p, "table") then return DefaultProfile() end
   local d = DefaultProfile()
 
   local function Bool(key)
-    if type(p[key]) ~= "boolean" then p[key] = d[key] end
+    if not ConfigReadable(p[key], "boolean") then p[key] = d[key] end
   end
   local function Num(key, lo, hi)
     p[key] = ClampNumber(p[key], lo, hi, d[key])
   end
   local function Str(key, maxLen)
-    if type(p[key]) ~= "string" then p[key] = d[key] end
+    if not ConfigReadable(p[key], "string") then p[key] = d[key] end
     if maxLen and #p[key] > maxLen then p[key] = p[key]:sub(1, maxLen) end
   end
 
@@ -277,11 +312,12 @@ function SP.ValidateProfile(p)
   Bool("hideBeyondDistance"); Bool("hideInInstances"); Bool("hideInOpenWorld")
   Bool("clampToScreen"); Bool("autoDetect"); Bool("autoThemeMatch"); Bool("debug")
 
-  if not VALID_FILTERS[p.filter] then p.filter = d.filter end
-  if not VALID_COLOR_MODES[p.colorMode] then p.colorMode = d.colorMode end
-  if not VALID_OUTLINES[p.fontOutline] then p.fontOutline = d.fontOutline end
-  if not VALID_ANCHORS[p.anchor] then p.anchor = d.anchor end
-  if not VALID_ANCHORS[p.anchorTo] then p.anchorTo = d.anchorTo end
+  if not ConfigReadable(p.filter, "string") or not VALID_FILTERS[p.filter] then p.filter = d.filter end
+  if not ConfigReadable(p.colorMode, "string") or not VALID_COLOR_MODES[p.colorMode] then p.colorMode = d.colorMode end
+  if not ConfigReadable(p.fontOutline, "string") or not VALID_OUTLINES[p.fontOutline] then p.fontOutline = d.fontOutline end
+  if not ConfigReadable(p.anchor, "string") or not VALID_ANCHORS[p.anchor] then p.anchor = d.anchor end
+  if not ConfigReadable(p.anchorTo, "string") or not VALID_ANCHORS[p.anchorTo] then p.anchorTo = d.anchorTo end
+  if not ConfigReadable(p.strata, "string") or not VALID_STRATA[p.strata] then p.strata = d.strata end
 
   Num("fontSize", 6, 32)
   Num("fontAlpha", 0, 1)
@@ -306,17 +342,20 @@ function SP.ValidateProfile(p)
   if p.sameSubzoneText == "Same subzone" then p.sameSubzoneText = "Same map" end
   Str("bgTexture", 256); Str("borderTexture", 256); Str("borderFile", 256)
   Str("customParentFunc", 128)
+  if p.customParentFunc ~= "" and not p.customParentFunc:match("^[%a_][%w_]*$") then
+    p.customParentFunc = ""
+  end
 
-  if type(p.formats) ~= "table" then p.formats = d.formats end
+  if not ConfigReadable(p.formats, "table") then p.formats = d.formats end
   for _, k in ipairs({ "distance", "subzone", "indoors", "underwater", "bearing", "combined" }) do
-    if type(p.formats[k]) ~= "string" then p.formats[k] = d.formats[k] end
+    if not ConfigReadable(p.formats[k], "string") then p.formats[k] = d.formats[k] end
     if #p.formats[k] > 256 then p.formats[k] = p.formats[k]:sub(1, 256) end
   end
 
   p.fontColor = ClampColor(p.fontColor, d.fontColor)
   p.bgColor = ClampColor(p.bgColor, d.bgColor)
   p.borderColor = ClampColor(p.borderColor, d.borderColor)
-  if type(p.fieldColors) ~= "table" then p.fieldColors = d.fieldColors end
+  if not ConfigReadable(p.fieldColors, "table") then p.fieldColors = d.fieldColors end
   for _, k in ipairs({ "distance", "subzone", "indoors", "underwater", "bearing" }) do
     p.fieldColors[k] = ClampColor(p.fieldColors[k], d.fieldColors[k])
   end
@@ -332,9 +371,27 @@ function SP.SetProfileValue(key, value)
   -- Nested keys use dot notation (including deeper values such as
   -- "fieldColors.distance.r"). Walk only existing tables so arbitrary paths
   -- cannot create unexpected SavedVariables structures.
+  if key:sub(1, 1) == "." or key:sub(-1) == "." or key:find("..", 1, true) then
+    return false, "invalid key path"
+  end
   local parts = {}
-  for part in key:gmatch("[^.]+") do parts[#parts + 1] = part end
+  for part in key:gmatch("[^.]+") do
+    if not part:match("^[%w_]+$") then return false, "invalid key path" end
+    parts[#parts + 1] = part
+  end
   if #parts == 0 then return false, "invalid key" end
+
+  -- Validate against a fresh schema, not the live table: unexpected keys and
+  -- type changes cannot smuggle arbitrary SavedVariables into a profile.
+  local schema = DefaultProfile()
+  for i = 1, #parts do
+    if type(schema) ~= "table" or schema[parts[i]] == nil then
+      return false, "unknown key: " .. key
+    end
+    schema = schema[parts[i]]
+  end
+  if type(value) ~= type(schema) then return false, "invalid value type for " .. key end
+
   local target = p
   for i = 1, #parts - 1 do
     if type(target[parts[i]]) ~= "table" then return false, "unknown key: " .. key end
@@ -344,11 +401,11 @@ function SP.SetProfileValue(key, value)
   SP.ValidateProfile(p)
   if SP.ApplyAllAppearances then
     local ok, err = pcall(SP.ApplyAllAppearances)
-    if not ok then SP.DebugPrint("ApplyAllAppearances failed: " .. tostring(err)) end
+    if not ok then SP.DebugPrint("appearance refresh failed") end
   end
   if SP.RefreshAllOverlays then
     local ok, err = pcall(SP.RefreshAllOverlays)
-    if not ok then SP.DebugPrint("RefreshAllOverlays failed: " .. tostring(err)) end
+    if not ok then SP.DebugPrint("overlay refresh failed") end
   end
   return true
 end
@@ -382,7 +439,7 @@ local function UrlEscape(s)
 end
 
 local function UrlUnescape(s)
-  return (s:gsub("%%3A", ":"):gsub("%%3D", "="):gsub("%%7C", "|"):gsub("%%25", "%"))
+  return (s:gsub("%%3A", ":"):gsub("%%3D", "="):gsub("%%7C", "|"):gsub("%%25", function() return "%" end))
 end
 
 -- Whitelist of exportable keys -> expected type ("bool"/"num"/"str"/"color").
@@ -421,17 +478,34 @@ local EXPORT_KEYS = {
   ["fieldColors.bearing.b"] = "num", ["fieldColors.bearing.a"] = "num",
 }
 
-local function FlattenValue(out, prefix, value)
+local function IsExportPrefix(prefix)
+  for key in pairs(EXPORT_KEYS) do
+    if key:sub(1, #prefix + 1) == prefix .. "." then return true end
+  end
+  return false
+end
+
+local function FlattenValue(out, prefix, value, ancestors, depth)
+  ancestors = ancestors or {}
+  depth = depth or 0
+  if depth > 8 then return end
   if type(value) == "table" then
+    if ancestors[value] then return end -- break malformed SavedVariables cycles
+    ancestors[value] = true
     for k, v in pairs(value) do
-      local newPrefix = prefix == "" and tostring(k) or (prefix .. "." .. tostring(k))
-      FlattenValue(out, newPrefix, v)
+      if type(k) == "string" then
+        local newPrefix = prefix == "" and k or (prefix .. "." .. k)
+        if EXPORT_KEYS[newPrefix] or IsExportPrefix(newPrefix) then
+          FlattenValue(out, newPrefix, v, ancestors, depth + 1)
+        end
+      end
     end
-  elseif type(value) == "boolean" then
+    ancestors[value] = nil
+  elseif type(value) == "boolean" and EXPORT_KEYS[prefix] == "bool" then
     out[#out + 1] = prefix .. "=" .. (value and "1" or "0")
-  elseif type(value) == "number" then
+  elseif type(value) == "number" and EXPORT_KEYS[prefix] == "num" then
     out[#out + 1] = prefix .. "=" .. string.format("%.4g", value)
-  elseif type(value) == "string" then
+  elseif type(value) == "string" and EXPORT_KEYS[prefix] == "str" then
     out[#out + 1] = prefix .. "=" .. UrlEscape(value)
   end
 end
@@ -445,7 +519,7 @@ function SP.ExportProfile()
     table.sort(parts)
     return EXPORT_PREFIX .. ":" .. tostring(SP._PROFILE_VERSION) .. ":" .. table.concat(parts, "|")
   end)
-  if not ok then return nil, "export failed: " .. tostring(result) end
+  if not ok then return nil, "export failed (profile data could not be encoded)" end
   return result
 end
 
@@ -460,53 +534,46 @@ function SP.ImportProfile(str)
   if prefix ~= EXPORT_PREFIX then return false, "bad prefix (expected SP1)" end
   local ver = tonumber(verStr)
   if not ver or ver < 1 or ver > SP._PROFILE_VERSION then
-    return false, "unsupported profile version: " .. tostring(verStr)
+    return false, "unsupported profile version"
   end
   if payload == "" then return false, "empty payload" end
 
   -- Parse into a fresh table first; only commit if everything validates.
-  local incoming = {}
+  local incoming, seenKeys = {}, {}
   for token in (payload .. "|"):gmatch("(.-)|") do
     local k, v = token:match("^([^=]+)=(.*)$")
-    if not k then return false, "malformed token: " .. token:sub(1, 32) end
+    if not k then return false, "malformed profile token" end
+    if seenKeys[k] then return false, "duplicate profile key" end
+    seenKeys[k] = true
     local expected = EXPORT_KEYS[k]
-    if not expected then return false, "unknown key: " .. k end
+    if not expected then return false, "unknown profile key" end
     if expected == "bool" then
-      if v ~= "0" and v ~= "1" then return false, "bad bool for " .. k end
+      if v ~= "0" and v ~= "1" then return false, "invalid boolean value" end
       incoming[k] = (v == "1")
     elseif expected == "num" then
       local n = tonumber(v)
-      if n == nil then return false, "bad number for " .. k end
+      if n == nil then return false, "invalid numeric value" end
       incoming[k] = n
     else
       incoming[k] = UrlUnescape(v)
-      if #incoming[k] > 512 then return false, "string too long for " .. k end
+      if #incoming[k] > 512 then return false, "profile string value too long" end
     end
   end
 
   -- Apply onto a copy of the current profile, validate, then commit.
   local p = SP.GetProfile()
-  local copy = {}
-  for k, v in pairs(p) do
-    if type(v) == "table" then
-      local t = {}
-      for kk, vv in pairs(v) do t[kk] = vv end
-      copy[k] = t
-    else
-      copy[k] = v
-    end
-  end
+  local copy = DeepCopy(p) or DefaultProfile()
   for k, v in pairs(incoming) do
     local dot = k:find(".", 1, true)
     if dot then
       local head = k:sub(1, dot - 1)
       local rest = k:sub(dot + 1)
-      if type(copy[head]) ~= "table" then return false, "bad nested key: " .. k end
+      if type(copy[head]) ~= "table" then return false, "invalid nested profile key" end
       local dot2 = rest:find(".", 1, true)
       if dot2 then
         local mid = rest:sub(1, dot2 - 1)
         local leaf = rest:sub(dot2 + 1)
-        if type(copy[head][mid]) ~= "table" then return false, "bad nested key: " .. k end
+        if type(copy[head][mid]) ~= "table" then return false, "invalid nested profile key" end
         copy[head][mid][leaf] = v
       else
         copy[head][rest] = v
@@ -529,12 +596,19 @@ end
 -- Debug printing (never prints secret values — only hide reasons)
 -- ---------------------------------------------------------------------------
 
+local function SafeChatText(value)
+  local ok, text = pcall(tostring, value or "")
+  if not ok then text = "[unprintable message]" end
+  text = text:gsub("|", "||"):gsub("[%z\1-\8\11\12\14-\31]", " ")
+  return text:sub(1, 240)
+end
+
 function SP.DebugPrint(msg)
   local p
   local ok, prof = pcall(SP.GetProfile)
   if ok then p = prof end
   if p and p.debug then
-    print("|cff33ccffSpatial Plates:|r " .. tostring(msg))
+    print("|cff33ccffSpatial Plates:|r " .. SafeChatText(msg))
   end
 end
 
@@ -624,7 +698,7 @@ local function HandleSlash(msg)
       if ok then
         print("|cff33ccffSpatial Plates:|r theme applied: " .. name)
       else
-        print("|cff33ccffSpatial Plates:|r " .. tostring(err))
+        print("|cff33ccffSpatial Plates:|r " .. SafeChatText(err))
         print("  Available: " .. table.concat(SP.PresetNames and SP.PresetNames() or {}, ", "))
       end
     else
@@ -638,7 +712,7 @@ local function HandleSlash(msg)
       print("|cff33ccffSpatial Plates:|r export string:")
       print(s)
     else
-      print("|cff33ccffSpatial Plates:|r export failed: " .. tostring(err))
+print("|cff33ccffSpatial Plates:|r export failed: " .. SafeChatText(err))
     end
   elseif cmd == "import" then
     if not rest or rest == "" then
@@ -648,7 +722,7 @@ local function HandleSlash(msg)
       if ok then
         print("|cff33ccffSpatial Plates:|r profile imported")
       else
-        print("|cff33ccffSpatial Plates:|r import rejected: " .. tostring(err))
+        print("|cff33ccffSpatial Plates:|r import rejected: " .. SafeChatText(err))
       end
     end
   elseif cmd == "reset" then
@@ -678,7 +752,7 @@ local function HandleSlash(msg)
   end
 end
 
--- Register slash commands. Guarded so a duplicate registration never errors.
+-- Register slash commands only when this addon's primary alias is not set.
 local function RegisterSlashCommands()
   if not SLASH_SPATIALPLATES1 then
     SLASH_SPATIALPLATES1 = "/spatialplates"
@@ -811,8 +885,18 @@ local function MakeColorButton(parent, labelText, x, y, key)
   b:SetWidth(120); b:SetHeight(22)
   b:SetText("Pick color...")
   b:SetScript("OnClick", function()
-    if not ColorPickerFrame then
+    local picker = ColorPickerFrame
+    if type(picker) ~= "table" and type(picker) ~= "userdata" then
       print("|cff33ccffSpatial Plates:|r color picker unavailable on this client")
+      return
+    end
+    local pickerReady = pcall(function()
+      if type(picker.SetColorRGB) ~= "function" or type(picker.Show) ~= "function" then
+        error("missing legacy color-picker methods")
+      end
+    end)
+    if not pickerReady then
+      print("|cff33ccffSpatial Plates:|r color picker API unavailable on this client")
       return
     end
     local p = SP.GetProfile()
@@ -826,18 +910,30 @@ local function MakeColorButton(parent, labelText, x, y, key)
       SP.SetProfileValue(key .. ".b", color.b)
       SP.SetProfileValue(key .. ".a", color.a)
     end
-    ColorPickerFrame:SetColorRGB(prev.r, prev.g, prev.b)
-    ColorPickerFrame.hasOpacity = true
-    ColorPickerFrame.opacity = prev.a
-    ColorPickerFrame.previousValues = { prev.r, prev.g, prev.b, prev.a }
-    ColorPickerFrame.cancelFunc = function() StoreColor(prev) end
-    ColorPickerFrame.func = function()
-      local r, g, b = ColorPickerFrame:GetColorRGB()
-      local a = ColorPickerFrame:GetColorAlpha() or 1
+    local initialized = pcall(picker.SetColorRGB, picker, prev.r, prev.g, prev.b)
+    if not initialized then
+      print("|cff33ccffSpatial Plates:|r color picker could not be initialized")
+      return
+    end
+    picker.hasOpacity = true
+    picker.opacity = prev.a
+    picker.previousValues = { prev.r, prev.g, prev.b, prev.a }
+    picker.cancelFunc = function() StoreColor(prev) end
+    picker.func = function()
+      local ok, r, g, b = pcall(picker.GetColorRGB, picker)
+      if not ok or type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then return end
+      local a = prev.a
+      if type(picker.GetColorAlpha) == "function" then
+        local okAlpha, alpha = pcall(picker.GetColorAlpha, picker)
+        if okAlpha and type(alpha) == "number" then a = alpha end
+      elseif type(picker.opacity) == "number" then
+        a = picker.opacity
+      end
       StoreColor({ r = r, g = g, b = b, a = a })
       if SP.RefreshPreview then SP.RefreshPreview() end
     end
-    ColorPickerFrame:Show()
+    local shown = pcall(picker.Show, picker)
+    if not shown then print("|cff33ccffSpatial Plates:|r color picker could not be shown") end
   end)
   b._key = key
   return b
@@ -994,7 +1090,7 @@ local function BuildOptionsPanel()
     b:SetScript("OnClick", function()
       if SP.ApplyPreset then
         local ok, err = SP.ApplyPreset(name)
-        if not ok then print("|cff33ccffSpatial Plates:|r " .. tostring(err)) end
+        if not ok then print("|cff33ccffSpatial Plates:|r " .. SafeChatText(err)) end
         SP.RefreshOptionsPanel()
       end
     end)
@@ -1042,7 +1138,7 @@ local function BuildOptionsPanel()
       print("|cff33ccffSpatial Plates:|r profile imported")
       SP.RefreshOptionsPanel()
     else
-      print("|cff33ccffSpatial Plates:|r import rejected: " .. tostring(err))
+      print("|cff33ccffSpatial Plates:|r import rejected: " .. SafeChatText(err))
     end
     self:Hide()
   end)
@@ -1140,7 +1236,7 @@ SP.RegisterOptionsPanel = RegisterOptionsPanel
 function SP.RefreshOptionsPanel()
   if optionsFrame and optionsFrame._refresh then
     local ok, err = pcall(optionsFrame._refresh)
-    if not ok then SP.DebugPrint("options refresh failed: " .. tostring(err)) end
+    if not ok then SP.DebugPrint("options refresh failed") end
   end
 end
 
@@ -1161,7 +1257,7 @@ function SP.RefreshPreview()
   if not previewFrame or not previewText then return end
   if SP.ApplyAppearanceToFrame then
     local ok, err = pcall(SP.ApplyAppearanceToFrame, previewFrame, previewText)
-    if not ok then SP.DebugPrint("preview apply failed: " .. tostring(err)) end
+    if not ok then SP.DebugPrint("preview apply failed") end
   end
   -- Sample text built from the combined template with fake readable values.
   local p = SP.GetProfile()
@@ -1181,7 +1277,7 @@ initFrame:SetScript("OnEvent", function(self, event, addonName)
     RegisterSlashCommands()
     -- Defer options registration until Presets/Appearance exist.
     local ok, err = pcall(RegisterOptionsPanel)
-    if not ok then SP.DebugPrint("options registration failed: " .. tostring(err)) end
+    if not ok then SP.DebugPrint("options registration failed") end
     if SP.RefreshPreview then pcall(SP.RefreshPreview) end
   end
 end)
