@@ -17,7 +17,7 @@ local PRESETS = {
     font = "default", customFontPath = "", fontSize = 11,
     fontOutline = "outline",
     fontColor = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 },
-    fontAlpha = 1.0, colorMode = "reaction",
+    fontAlpha = 1.0, colorMode = "name",
     formats = { distance = "{d}y", subzone = "{zone}", indoors = "{env}", underwater = "{water}", bearing = "{dir}", combined = "{d}y | {zone}" },
     sameSubzoneText = "Same map",
     bgEnabled = true, bgColor = { r = 0, g = 0, b = 0, a = 0.45 },

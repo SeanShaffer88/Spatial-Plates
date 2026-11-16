@@ -13,7 +13,7 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
    - macOS: use the matching client folder under `~/Documents/Blizzard Entertainment/World of Warcraft/`, then `Interface/AddOns/SpatialPlates/SpatialPlates.toc`.
 3. Check that `SpatialPlates.toc` is directly inside `AddOns/SpatialPlates`, next to `Config.lua`, `Presets.lua`, `Appearance.lua`, `Core.lua`, and `Minimap.lua`; avoid an extra nested directory.
 4. Fully restart the game, select the intended client/version, open **AddOns** on the character-select screen, and enable **Spatial Plates**. If it is listed as out of date, enable **Load out of date AddOns**; `## Interface: 16001` may not match your client.
-5. Type `/splates` in game to see commands, or `/splates config` to open the options panel.
+5. Click the spyglass **minimap button** (or type `/splates settings`) to open the settings window. `/splates` lists all commands and `/splates config` opens the full options panel.
 
 ## TOC Interface version — please verify
 
@@ -27,7 +27,11 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 
 ## Usage
 
-- Which nameplates get an overlay is controlled by five toggles on the **minimap button** (left- or right-click it; drag to move it). All are on by default; any checked mode that matches makes a unit eligible. Yourself and friendly NPCs never get one.
+- **Settings window:** left- or right-click the minimap button (drag it to move it) or type `/splates settings`. The small, movable window holds:
+  - **Show markers on:** friendly players, party / raid, friends list, enemy players, enemy NPCs. All are on by default; any checked one that matches makes a unit eligible. Yourself and friendly NPCs never get one.
+  - **Text:** distance and map name on/off, size, color (Name, Reaction, Class or Custom, with a color swatch), outline thickness, and background on/off with a color swatch.
+  - **Position:** above or below the nameplate, Offset X / Y, and scale.
+  - **Reset** returns everything to defaults, and **All options...** opens the full options panel.
   - **All friendly players**.
   - **Party / raid members**.
   - **Friends-list friends**.
@@ -36,7 +40,7 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
   The `filter` setting below narrows **friendly players** only.
 - **Distance for units outside your group:** the client reports exact distance and map only for party/raid members. Everyone else (other players, all NPCs) shows an **estimated range** such as `<20y` or `>40y`. The steps come from your own spells: every active spell with a range (and no minimum range) adds a step, so the steps depend on your class and level. Helpful spells measure friendly units and harmful spells measure enemies. `CheckInteractDistance` always adds `<10y` and `<28y`. Map name, indoors and underwater are not available for these units.
 - **In combat:** exact group distances keep their last value if the game stops reporting them. Estimated ranges are hidden instead of frozen, so a mob you are kiting never shows an old range.
-- **Colors:** text is colored by reaction by default: green friendly, yellow neutral, red hostile. Profiles that still used the old untouched white default switch to reaction colors once; profiles with a custom color keep it.
+- **Colors:** by default the text uses the same color as the unit's name on its nameplate, read from the plate itself or from `UnitSelectionColor`. Around the text is an **outline colored by distance**: green within 10 yards, yellow-green within 20, yellow within 30, orange within 40, and red beyond 40 yards (or when only "beyond N" is known). For estimated ranges, the band comes from the upper bound. The outline is drawn as eight offset copies of the text, since the client's own font outline is always black; the **Outline** choice sets its thickness. Turn it off with **Distance-colored outline** in the full options panel. Profiles still on an untouched default (reaction, or plain white) switch to name colors once; deliberate choices are kept.
 - By default the overlay sits **above** the nameplate and shows `12y | Same map`.
 - Distance appears only when readable **and** you and the unit are on the same map.
 - The location field compares `C_Map.GetBestMapForUnit`: same map displays `Same map`, otherwise it displays the unit's map name. This API is **not subzone-granular**, so the addon does not claim the players share a subzone; the field hides cleanly when map data is unavailable.
@@ -64,7 +68,8 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 | `/splates minimap [on\|off]` | Show/hide the minimap button |
 | `/splates theme <name>` | Apply a theme preset |
 | `/splates theme auto` | Re-detect loaded replacement addon and force-apply its matching preset |
-| `/splates config` | Open options panel |
+| `/splates settings` | Open the settings window |
+| `/splates config` | Open the full options panel |
 | `/splates export` | Print export string |
 | `/splates import <string>` | Import a profile string |
 | `/splates reset` | Reset profile to defaults |
@@ -81,7 +86,7 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 - **Background / border:** enable, color, alpha, texture, edge size, inset / edge file.
 - **Layout:** anchor (9 positions), offsets X/Y, scale, width, height, padding, strata, frame level, clamp to screen.
 - **Visibility rules:** hide in/out of combat, hide when nameplate hidden / unit not visible, hide beyond max distance, hide in instances / open world.
-- **Color rules:** custom / class / reaction / per-field colors.
+- **Color rules:** name / custom / class / reaction / per-field colors, plus the distance-colored outline.
 - **Theme presets:** Default, Minimal, Plater-like, ThreatPlates-like, ElvUI-like, TukUI-like, Classic-like, High Contrast (visual only — no other addon required).
 - **Automatic theme matching:** enabled by default. On loading a supported nameplate replacement, Spatial Plates selects a matching visual preset: Plater → Plater-like, ThreatPlates → ThreatPlates-like, ElvUI → ElvUI-like, TukUI → TukUI-like, KuiNameplates → Minimal, and NeatPlates → Classic-like. It checks addon-loaded state only, does not inspect or modify their frames, and remembers which addon was matched so later reloads do not overwrite your appearance edits. Disable **Auto-match loaded nameplate addon theme** in options to turn this off. The options panel shows the last matched addon and preset. Use the **Detect / apply matching theme** button or `/splates theme auto` to force a fresh match at any time, even when automatic matching is disabled. Detection works whether the supported addon loads before or after Spatial Plates.
 - **Import/export:** export the profile as a compact `SP1:...` string; import it back (malformed strings are rejected safely).
@@ -120,7 +125,7 @@ Enable **Auto-detect nameplate addons** in the options panel to allow read-only 
 | `SpatialPlates/Appearance.lua` | Data-driven appearance application + text formatting |
 | `SpatialPlates/Core.lua` | Nameplate detection, eligibility, field computation, visibility, ticker, cleanup |
 | `SpatialPlates/Range.lua` | Estimated range steps from the player's spellbook and interaction distances |
-| `SpatialPlates/Minimap.lua` | Minimap button and the mode popup |
+| `SpatialPlates/Minimap.lua` | Minimap button and the settings window |
 
 Load order in `SpatialPlates/SpatialPlates.toc` is `Config.lua → Presets.lua → Appearance.lua → Range.lua → Core.lua → Minimap.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
 

@@ -29,7 +29,7 @@ SP.VALID_ANCHORS = VALID_ANCHORS
 local VALID_FILTERS = { all = true, party = true, raid = true, guild = true, friends = true }
 SP.VALID_FILTERS = VALID_FILTERS
 
-local VALID_COLOR_MODES = { custom = true, class = true, reaction = true, perField = true }
+local VALID_COLOR_MODES = { name = true, custom = true, class = true, reaction = true, perField = true }
 SP.VALID_COLOR_MODES = VALID_COLOR_MODES
 
 local VALID_OUTLINES = { none = true, outline = true, thick = true }
@@ -78,7 +78,8 @@ local function DefaultProfile()
     fontOutline = "outline", -- none | outline | thick
     fontColor = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 },
     fontAlpha = 1.0,
-    colorMode = "reaction", -- custom | class | reaction | perField
+    colorMode = "name", -- name | custom | class | reaction | perField
+    distanceOutline = true, -- outline colored by distance (green near .. red far)
     fieldColors = {
       distance = { r = 1.0, g = 1.0, b = 1.0, a = 1.0 },
       subzone = { r = 0.85, g = 0.85, b = 0.85, a = 1.0 },
@@ -248,6 +249,21 @@ function SP.EnsureDB()
     for _, profile in pairs(db.charProfiles) do Migrate(profile) end
     db.reactionColorMigrated = true
   end
+  -- 1.4.0: name colors (matching the nameplate) became the default. Switch
+  -- profiles still on an untouched default (reaction, or custom white) once.
+  if db.nameColorMigrated ~= true then
+    local function Migrate(profile)
+      if type(profile) ~= "table" then return end
+      local c = profile.fontColor
+      local white = type(c) == "table" and c.r == 1 and c.g == 1 and c.b == 1
+      if profile.colorMode == "reaction" or (profile.colorMode == "custom" and white) then
+        profile.colorMode = "name"
+      end
+    end
+    Migrate(db.profile)
+    for _, profile in pairs(db.charProfiles) do Migrate(profile) end
+    db.nameColorMigrated = true
+  end
   -- Fill any missing profile keys from defaults (forward-compatible).
   local defaults = DefaultProfile()
   for k, v in pairs(defaults) do
@@ -347,7 +363,7 @@ function SP.ValidateProfile(p)
   Bool("hideWhenNameplateHidden"); Bool("hideWhenUnitNotVisible")
   Bool("hideBeyondDistance"); Bool("hideInInstances"); Bool("hideInOpenWorld")
   Bool("showGlobal"); Bool("showParty"); Bool("showFriendsList")
-  Bool("showEnemyPlayers"); Bool("showEnemyNPCs")
+  Bool("showEnemyPlayers"); Bool("showEnemyNPCs"); Bool("distanceOutline")
   Bool("clampToScreen"); Bool("autoDetect"); Bool("autoThemeMatch"); Bool("debug")
 
   if not ConfigReadable(p.filter, "string") or not VALID_FILTERS[p.filter] then p.filter = d.filter end
@@ -490,7 +506,7 @@ local EXPORT_KEYS = {
   showIndoors = "bool", showUnderwater = "bool", showBearing = "bool",
   filter = "str", font = "str",
   showGlobal = "bool", showParty = "bool", showFriendsList = "bool",
-  showEnemyPlayers = "bool", showEnemyNPCs = "bool", customFontPath = "str",
+  showEnemyPlayers = "bool", showEnemyNPCs = "bool", distanceOutline = "bool", customFontPath = "str",
   fontSize = "num", fontOutline = "str", fontAlpha = "num",
   colorMode = "str", sameSubzoneText = "str",
   bgEnabled = "bool", bgEdgeSize = "num", bgInset = "num",
@@ -680,7 +696,8 @@ local function PrintHelp()
   print("  /splates enemynpcs [on|off] - show on attackable NPCs")
   print("  /splates theme <name>      - apply a theme preset")
   print("  /splates theme auto        - detect and apply the loaded addon match now")
-  print("  /splates config            - open options panel")
+  print("  /splates settings          - open the settings window")
+  print("  /splates config            - open the full options panel")
   print("  /splates export            - print export string")
   print("  /splates import <string>   - import a profile string")
   print("  /splates reset             - reset profile to defaults")
@@ -772,6 +789,8 @@ local function HandleSlash(msg)
     else
       print("|cff33ccffSpatial Plates:|r presets not loaded yet")
     end
+  elseif cmd == "settings" or cmd == "window" then
+    if SP.ToggleSettingsWindow then SP.ToggleSettingsWindow() end
   elseif cmd == "config" or cmd == "options" then
     if SP.OpenOptions then SP.OpenOptions() end
   elseif cmd == "export" then
@@ -946,63 +965,80 @@ local function MakeDropdown(parent, labelText, x, y, options, key, width)
   return dd
 end
 
+-- Open the client color picker for a color stored at `key` (dot path, e.g.
+-- "fontColor"). Uses the modern SetupColorPickerAndShow API when present and
+-- the legacy func/Show fields otherwise. `onChange` runs after each change.
+function SP.OpenColorPicker(key, onChange)
+  local picker = ColorPickerFrame
+  if type(picker) ~= "table" and type(picker) ~= "userdata" then
+    print("|cff33ccffSpatial Plates:|r color picker unavailable on this client")
+    return false
+  end
+  local p = SP.GetProfile()
+  local target = p
+  for part in tostring(key):gmatch("[^.]+") do target = type(target) == "table" and target[part] or nil end
+  local c = type(target) == "table" and target or { r = 1, g = 1, b = 1, a = 1 }
+  local prev = { r = c.r or 1, g = c.g or 1, b = c.b or 1, a = c.a or 1 }
+  local function StoreColor(color)
+    SP.SetProfileValue(key .. ".r", color.r)
+    SP.SetProfileValue(key .. ".g", color.g)
+    SP.SetProfileValue(key .. ".b", color.b)
+    SP.SetProfileValue(key .. ".a", color.a)
+    if SP.RefreshPreview then SP.RefreshPreview() end
+    if onChange then pcall(onChange) end
+  end
+  local function ReadPicker()
+    local ok, r, g, b = pcall(picker.GetColorRGB, picker)
+    if not ok or type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then return end
+    local a = prev.a
+    if type(picker.GetColorAlpha) == "function" then
+      local okAlpha, alpha = pcall(picker.GetColorAlpha, picker)
+      if okAlpha and type(alpha) == "number" then a = alpha end
+    elseif type(picker.opacity) == "number" then
+      a = picker.opacity
+    end
+    StoreColor({ r = r, g = g, b = b, a = a })
+  end
+
+  if type(picker.SetupColorPickerAndShow) == "function" then
+    local shown = pcall(picker.SetupColorPickerAndShow, picker, {
+      r = prev.r, g = prev.g, b = prev.b,
+      opacity = prev.a, hasOpacity = true,
+      swatchFunc = ReadPicker,
+      opacityFunc = ReadPicker,
+      cancelFunc = function() StoreColor(prev) end,
+    })
+    if not shown then print("|cff33ccffSpatial Plates:|r color picker could not be shown") end
+    return shown
+  end
+
+  -- Legacy color picker.
+  if type(picker.SetColorRGB) ~= "function" or type(picker.Show) ~= "function" then
+    print("|cff33ccffSpatial Plates:|r color picker API unavailable on this client")
+    return false
+  end
+  if not pcall(picker.SetColorRGB, picker, prev.r, prev.g, prev.b) then
+    print("|cff33ccffSpatial Plates:|r color picker could not be initialized")
+    return false
+  end
+  picker.hasOpacity = true
+  picker.opacity = prev.a
+  picker.previousValues = { prev.r, prev.g, prev.b, prev.a }
+  picker.cancelFunc = function() StoreColor(prev) end
+  picker.func = ReadPicker
+  picker.opacityFunc = ReadPicker
+  local shown = pcall(picker.Show, picker)
+  if not shown then print("|cff33ccffSpatial Plates:|r color picker could not be shown") end
+  return shown
+end
+
 local function MakeColorButton(parent, labelText, x, y, key)
   MakeLabel(parent, labelText, x, y)
   local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
   b:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y - 16)
   b:SetWidth(120); b:SetHeight(22)
   b:SetText("Pick color...")
-  b:SetScript("OnClick", function()
-    local picker = ColorPickerFrame
-    if type(picker) ~= "table" and type(picker) ~= "userdata" then
-      print("|cff33ccffSpatial Plates:|r color picker unavailable on this client")
-      return
-    end
-    local pickerReady = pcall(function()
-      if type(picker.SetColorRGB) ~= "function" or type(picker.Show) ~= "function" then
-        error("missing legacy color-picker methods")
-      end
-    end)
-    if not pickerReady then
-      print("|cff33ccffSpatial Plates:|r color picker API unavailable on this client")
-      return
-    end
-    local p = SP.GetProfile()
-    local target = p
-    for part in tostring(key):gmatch("[^.]+") do target = target and target[part] end
-    local c = target or { r = 1, g = 1, b = 1, a = 1 }
-    local prev = { r = c.r or 1, g = c.g or 1, b = c.b or 1, a = c.a or 1 }
-    local function StoreColor(color)
-      SP.SetProfileValue(key .. ".r", color.r)
-      SP.SetProfileValue(key .. ".g", color.g)
-      SP.SetProfileValue(key .. ".b", color.b)
-      SP.SetProfileValue(key .. ".a", color.a)
-    end
-    local initialized = pcall(picker.SetColorRGB, picker, prev.r, prev.g, prev.b)
-    if not initialized then
-      print("|cff33ccffSpatial Plates:|r color picker could not be initialized")
-      return
-    end
-    picker.hasOpacity = true
-    picker.opacity = prev.a
-    picker.previousValues = { prev.r, prev.g, prev.b, prev.a }
-    picker.cancelFunc = function() StoreColor(prev) end
-    picker.func = function()
-      local ok, r, g, b = pcall(picker.GetColorRGB, picker)
-      if not ok or type(r) ~= "number" or type(g) ~= "number" or type(b) ~= "number" then return end
-      local a = prev.a
-      if type(picker.GetColorAlpha) == "function" then
-        local okAlpha, alpha = pcall(picker.GetColorAlpha, picker)
-        if okAlpha and type(alpha) == "number" then a = alpha end
-      elseif type(picker.opacity) == "number" then
-        a = picker.opacity
-      end
-      StoreColor({ r = r, g = g, b = b, a = a })
-      if SP.RefreshPreview then SP.RefreshPreview() end
-    end
-    local shown = pcall(picker.Show, picker)
-    if not shown then print("|cff33ccffSpatial Plates:|r color picker could not be shown") end
-  end)
+  b:SetScript("OnClick", function() SP.OpenColorPicker(key) end)
   b._key = key
   return b
 end
@@ -1036,6 +1072,7 @@ local function BuildOptionsPanel()
     y = y - 24
   end
   AddCheck("Enabled", "enabled")
+  AddCheck("Distance-colored outline", "distanceOutline")
   AddCheck("Show distance", "showDistance")
   AddCheck("Show same map / map name", "showSubzone")
   AddCheck("Show indoors/outdoors", "showIndoors")
@@ -1089,7 +1126,7 @@ local function BuildOptionsPanel()
   end
   AddDropdown("Filter", { "all", "party", "raid", "guild", "friends" }, "filter")
   AddDropdown("Font outline", { "none", "outline", "thick" }, "fontOutline")
-  AddDropdown("Color mode", { "custom", "class", "reaction", "perField" }, "colorMode")
+  AddDropdown("Color mode", { "name", "custom", "class", "reaction", "perField" }, "colorMode")
   AddDropdown("Anchor", { "TOP", "BOTTOM", "LEFT", "RIGHT", "TOP-LEFT", "TOP-RIGHT", "BOTTOM-LEFT", "BOTTOM-RIGHT", "CENTER" }, "anchor")
   AddDropdown("Anchor to", { "TOP", "BOTTOM", "LEFT", "RIGHT", "TOP-LEFT", "TOP-RIGHT", "BOTTOM-LEFT", "BOTTOM-RIGHT", "CENTER" }, "anchorTo")
   AddDropdown("Strata", { "BACKGROUND", "LOW", "MEDIUM", "HIGH", "DIALOG", "FULLSCREEN", "FULLSCREEN_DIALOG", "TOOLTIP" }, "strata")
