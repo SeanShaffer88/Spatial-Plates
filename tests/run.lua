@@ -888,39 +888,31 @@ test("CACHE1 eligibility is cached until an event, profile change or TTL expiry"
   clearOverlays()
 end)
 
-test("FEET1 feet mode sets the nameplate CVar, re-anchors, and restores on off", function()
-  resetProfile(); clearOverlays()
-  local cvars = { nameplateOtherAtBase = "0" }
+test("FEET2 the 1.3.0 feet-mode CVar value is restored once and the option is gone", function()
+  resetProfile()
+  local cvars = { nameplateOtherAtBase = "1" }
   C_CVar = {
     GetCVar = function(name) return cvars[name] end,
     SetCVar = function(name, value) cvars[name] = value; return true end,
   }
-  SP.SetProfileValue("markerAtFeet", true); SP.ApplyMarkerPosition()
-  equal(cvars.nameplateOtherAtBase, "1")
-  equal(SpatialPlatesDB.savedOtherAtBase, "0")
-  expect(SP._feetActive)
-  currentPlate = CreateFrame("Frame", "PlateFEET1", UIParent); currentPlate.unit = "friend"
-  fire("NAME_PLATE_UNIT_ADDED", "friend")
-  local overlay = SP._overlays.friend
-  expect(overlay and overlay._lastPoint, "overlay anchored")
-  equal(overlay._lastPoint[1], "TOP"); equal(overlay._lastPoint[3], "BOTTOM")
-  SP.SetProfileValue("markerAtFeet", false); SP.ApplyMarkerPosition()
-  equal(cvars.nameplateOtherAtBase, "0", "previous value restored")
-  equal(SpatialPlatesDB.savedOtherAtBase, nil)
-  expect(not SP._feetActive)
-  -- Combat defers the CVar change until combat ends.
+  SpatialPlatesDB.savedOtherAtBase = "0"
+  SpatialPlatesDB.profile.markerAtFeet = true
   combatState = true
-  SP.SetProfileValue("markerAtFeet", true); SP.ApplyMarkerPosition()
-  equal(cvars.nameplateOtherAtBase, "0", "no CVar write in combat")
+  SP.RestoreFeetCVar()
+  equal(cvars.nameplateOtherAtBase, "1", "no CVar write in combat")
+  equal(SpatialPlatesDB.savedOtherAtBase, "0", "kept for the retry")
   combatState = false
   fire("PLAYER_REGEN_ENABLED")
-  equal(cvars.nameplateOtherAtBase, "1", "applied after combat")
-  -- A client without the CVar: no error, marker stays at the nameplate.
-  cvars.nameplateOtherAtBase = nil
-  expect(pcall(SP.ApplyMarkerPosition))
-  expect(not SP._feetActive)
+  equal(cvars.nameplateOtherAtBase, "0", "saved value restored")
+  equal(SpatialPlatesDB.savedOtherAtBase, nil, "restored only once")
+  cvars.nameplateOtherAtBase = "1"
+  fire("PLAYER_ENTERING_WORLD")
+  equal(cvars.nameplateOtherAtBase, "1", "nothing saved: setting left alone")
+  SP.EnsureDB()
+  equal(SpatialPlatesDB.profile.markerAtFeet, nil, "stale option key dropped")
+  local ok = SP.SetProfileValue("markerAtFeet", true)
+  expect(not ok, "option no longer exists")
   C_CVar = nil
-  clearOverlays()
 end)
 
 test("COLOR1 reaction colors are the default and untouched old profiles migrate once", function()
