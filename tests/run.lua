@@ -174,10 +174,10 @@ C_Timer = {
 RAID_CLASS_COLORS = { MAGE = { r = 0.3, g = 0.7, b = 1.0 } }
 
 -- Load the addon in its declared order, as the TOC does.
-dofile("Config.lua")
-dofile("Presets.lua")
-dofile("Appearance.lua")
-dofile("Core.lua")
+dofile("SpatialPlates/Config.lua")
+dofile("SpatialPlates/Presets.lua")
+dofile("SpatialPlates/Appearance.lua")
+dofile("SpatialPlates/Core.lua")
 local SP = SpatialPlates
 
 local function resetProfile()

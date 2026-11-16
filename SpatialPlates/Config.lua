@@ -11,7 +11,7 @@
 -- Namespace table. Global name uses the required "SpatialPlates_" prefix.
 SpatialPlates = SpatialPlates or {}
 local SP = SpatialPlates
-SP._VERSION = "1.0.1"
+SP._VERSION = "1.0.2"
 SP._PROFILE_VERSION = 1
 
 -- ---------------------------------------------------------------------------

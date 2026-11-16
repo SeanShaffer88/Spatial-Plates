@@ -6,12 +6,12 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 
 ## Installation
 
-1. Download the `SpatialPlates-<version>.zip` asset from [GitHub Releases](https://github.com/SeanShaffer88/Spatial-Plates/releases), not the automatically generated **Source code** archive.
-2. Extract the release archive into your active WoW client’s `Interface/AddOns` directory. It already contains an addon folder named **`SpatialPlates`** (no hyphen):
+1. Download the **Source code (zip)** for the release from [GitHub Releases](https://github.com/SeanShaffer88/SpatialPlates/releases) (or use **Code → Download ZIP** on GitHub).
+2. In the extracted repository archive, copy the inner **`SpatialPlates`** folder into your active WoW client’s `Interface/AddOns` directory. Do not rename the extracted repository root; the inner addon folder already has the required name:
    - Windows Classic: `World of Warcraft\_classic_\Interface\AddOns\SpatialPlates\SpatialPlates.toc`
    - Windows Classic Era: `World of Warcraft\_classic_era_\Interface\AddOns\SpatialPlates\SpatialPlates.toc`
    - macOS: use the matching client folder under `~/Documents/Blizzard Entertainment/World of Warcraft/`, then `Interface/AddOns/SpatialPlates/SpatialPlates.toc`.
-3. Check that `SpatialPlates.toc` is directly inside `SpatialPlates`, next to `Config.lua`, `Presets.lua`, `Appearance.lua`, and `Core.lua`; avoid an extra nested directory. If installing from the GitHub source archive instead, manually copy these files into `AddOns/SpatialPlates/`.
+3. Check that `SpatialPlates.toc` is directly inside `AddOns/SpatialPlates`, next to `Config.lua`, `Presets.lua`, `Appearance.lua`, and `Core.lua`; avoid an extra nested directory.
 4. Fully restart the game, select the intended client/version, open **AddOns** on the character-select screen, and enable **Spatial Plates**. If it is listed as out of date, enable **Load out of date AddOns**; `## Interface: 16001` may not match your client.
 5. Type `/splates` in game to see commands, or `/splates config` to open the options panel.
 
@@ -99,13 +99,13 @@ Enable **Auto-detect nameplate addons** in the options panel to allow read-only 
 
 | File | Purpose |
 |---|---|
-| `SpatialPlates.toc` | Addon metadata, SavedVariables, load order |
-| `Config.lua` | Defaults, `SpatialPlatesDB`, validation, export/import codec, slash commands, options panel |
-| `Presets.lua` | Theme presets (partial profile tables) |
-| `Appearance.lua` | Data-driven appearance application + text formatting |
-| `Core.lua` | Nameplate detection, eligibility, field computation, visibility, ticker, cleanup |
+| `SpatialPlates/SpatialPlates.toc` | Addon metadata, SavedVariables, load order |
+| `SpatialPlates/Config.lua` | Defaults, `SpatialPlatesDB`, validation, export/import codec, slash commands, options panel |
+| `SpatialPlates/Presets.lua` | Theme presets (partial profile tables) |
+| `SpatialPlates/Appearance.lua` | Data-driven appearance application + text formatting |
+| `SpatialPlates/Core.lua` | Nameplate detection, eligibility, field computation, visibility, ticker, cleanup |
 
-Load order in the TOC is `Config.lua → Presets.lua → Appearance.lua → Core.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
+Load order in `SpatialPlates/SpatialPlates.toc` is `Config.lua → Presets.lua → Appearance.lua → Core.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
 
 ## Testing
 
