@@ -7,11 +7,11 @@
 --   power, auras, cooldowns, damage, healing, threat, or any combat data.
 -- * It NEVER uses the combat log, never automates decisions, and never hooks
 --   insecure combat functions.
--- * Every spatial API call (UnitDistanceSquared, C_Map.*, UnitIsSubmerged,
---   etc.) is wrapped in pcall + type checks + issecretvalue checks. If a
---   value is nil, the wrong type, or secret/unreadable, the field is hidden
---   (or the last known non-secret value is frozen while in combat). The
---   addon never errors, never taints, and never does arithmetic on a secret.
+-- * Spatial API reads (UnitDistanceSquared, C_Map.*, UnitIsSubmerged, etc.)
+--   are guarded with pcall, type checks, and issecretvalue checks where
+--   available. Nil, wrong-type, or unreadable values fail closed (or the last
+--   readable value is frozen in combat). This is defensive, not a guarantee
+--   against errors or taint on every client build.
 -- * Debug output prints only hide REASONS, never secret values.
 
 SpatialPlates = SpatialPlates or {}
@@ -29,9 +29,10 @@ SP._ticker = nil
 -- exposes issecretvalue), and of the expected type (when given).
 local function IsReadable(value, expectedType)
   if value == nil then return false end
-  if issecretvalue then
+  if type(issecretvalue) == "function" then
     local ok, secret = pcall(issecretvalue, value)
-    if ok and secret == true then return false end
+    -- If the client cannot tell whether a value is secret, fail closed.
+    if not ok or secret == true then return false end
   end
   if expectedType and type(value) ~= expectedType then return false end
   return true
@@ -48,29 +49,51 @@ local function SafeCall(fn, ...)
 end
 SP.SafeCall = SafeCall
 
+local function HasMethod(object, methodName)
+  local objectType = type(object)
+  if objectType ~= "table" and objectType ~= "userdata" then return false end
+  local ok, method = pcall(function() return object[methodName] end)
+  return ok and type(method) == "function"
+end
+SP.HasMethod = HasMethod
+
+local function IsFrameLike(object)
+  return IsReadable(object)
+    and HasMethod(object, "SetPoint")
+    and HasMethod(object, "CreateFontString")
+end
+SP.IsFrameLike = IsFrameLike
+
+local function SafeBooleanCall(fn, ...)
+  local value = SafeCall(fn, ...)
+  if not IsReadable(value, "boolean") then return nil end
+  return value
+end
+SP.SafeBooleanCall = SafeBooleanCall
+
 -- ---------------------------------------------------------------------------
 -- Unit eligibility (friendly players only)
 -- ---------------------------------------------------------------------------
 
 local function SafeUnitIsPlayer(unit)
-  if not UnitIsPlayer then return false end
-  return SafeCall(UnitIsPlayer, unit) == true
+  if type(UnitIsPlayer) ~= "function" then return false end
+  return SafeBooleanCall(UnitIsPlayer, unit) == true
 end
 
 local function SafeUnitIsFriend(unit)
-  if not UnitIsFriend then return false end
-  return SafeCall(UnitIsFriend, "player", unit) == true
+  if type(UnitIsFriend) ~= "function" then return false end
+  return SafeBooleanCall(UnitIsFriend, "player", unit) == true
 end
 
 local function SafeIsSelf(unit)
-  if not UnitIsUnit then return false end
-  return SafeCall(UnitIsUnit, unit, "player") == true
+  if type(UnitIsUnit) ~= "function" then return false end
+  return SafeBooleanCall(UnitIsUnit, unit, "player") == true
 end
 
 -- True only for friendly players who are not the player.
 -- Uses ONLY UnitIsPlayer / UnitIsFriend / UnitIsUnit (documented non-secret).
 function SP.IsFriendlyPlayer(unit)
-  if type(unit) ~= "string" or unit == "" then return false end
+  if not IsReadable(unit, "string") or unit == "" then return false end
   if not SafeUnitIsPlayer(unit) then return false end
   if SafeIsSelf(unit) then return false end
   if not SafeUnitIsFriend(unit) then return false end
@@ -108,20 +131,21 @@ function SP.IsFriendListMember(unit)
   local queryName = name
   if type(realm) == "string" and realm ~= "" then queryName = name .. "-" .. realm end
   local ok, result = pcall(friendQuery, queryName)
-  return ok and result == true
+  if not ok or not IsReadable(result, "boolean") then return false end
+  return result == true
 end
 
 function SP.PassesFilter(unit, profile)
   local filter = profile and profile.filter or "all"
   if filter == "all" then return true end
   if filter == "party" then
-    if UnitIsParty then return SafeCall(UnitIsParty, unit) == true end
+    if type(UnitIsParty) == "function" then return SafeBooleanCall(UnitIsParty, unit) == true end
     return false
   elseif filter == "raid" then
-    if UnitIsRaid then return SafeCall(UnitIsRaid, unit) == true end
+    if type(UnitIsRaid) == "function" then return SafeBooleanCall(UnitIsRaid, unit) == true end
     return false
   elseif filter == "guild" then
-    if UnitIsInMyGuild then return SafeCall(UnitIsInMyGuild, unit) == true end
+    if type(UnitIsInMyGuild) == "function" then return SafeBooleanCall(UnitIsInMyGuild, unit) == true end
     return false
   elseif filter == "friends" then
     return SP.IsFriendListMember(unit)
@@ -135,28 +159,31 @@ end
 
 -- Get the unit token for a nameplate frame, or nil.
 local function GetNameplateUnit(frame)
-  if type(frame) ~= "table" then return nil end
-  -- Modern clients: frame:GetUnit()
-  if frame.GetUnit then
-    local ok, unit = pcall(frame.GetUnit, frame)
-    if ok and type(unit) == "string" and unit ~= "" then return unit end
+  if not IsReadable(frame) or (type(frame) ~= "table" and type(frame) ~= "userdata") then return nil end
+  -- Modern clients: frame:GetUnit(). Access and call are both protected
+  -- because frames supplied by integrations may be unusual objects.
+  local okGetUnit, getUnit = pcall(function() return frame.GetUnit end)
+  if okGetUnit and type(getUnit) == "function" then
+    local ok, unit = pcall(getUnit, frame)
+    if ok and IsReadable(unit, "string") and unit ~= "" then return unit end
   end
   -- Legacy: frame.unit
-  if type(frame.unit) == "string" and frame.unit ~= "" then return frame.unit end
+  local ok, unit = pcall(function() return frame.unit end)
+  if ok and IsReadable(unit, "string") and unit ~= "" then return unit end
   return nil
 end
 
 -- Get the default nameplate frame for a unit, or nil.
 local function GetDefaultNameplate(unit)
-  if C_NamePlate and C_NamePlate.GetNamePlateForUnit then
+  if C_NamePlate and type(C_NamePlate.GetNamePlateForUnit) == "function" then
     local frame = SafeCall(C_NamePlate.GetNamePlateForUnit, unit)
-    if type(frame) == "table" then return frame end
+    if IsFrameLike(frame) then return frame end
   end
-  if C_NamePlate and C_NamePlate.GetNamePlates then
+  if C_NamePlate and type(C_NamePlate.GetNamePlates) == "function" then
     local plates = SafeCall(C_NamePlate.GetNamePlates)
-    if type(plates) == "table" then
+    if IsReadable(plates, "table") then
       for _, plate in ipairs(plates) do
-        if GetNameplateUnit(plate) == unit then return plate end
+        if GetNameplateUnit(plate) == unit and IsFrameLike(plate) then return plate end
       end
     end
   end
@@ -174,13 +201,13 @@ local function GetCustomParent(unit, profile)
     return nil
   end
   local frame = SafeCall(fn, unit)
-  if type(frame) == "table" and frame.SetPoint then return frame end
+  if IsFrameLike(frame) then return frame end
   SP.DebugPrint("customParentFunc '" .. funcName .. "' returned no frame; falling back")
   return nil
 end
 
 -- Optional auto-detection of common nameplate addons. Read-only checks of
--- known global names only; never errors when absent; never modifies their
+-- known global names only; guarded when absent; never writes to their
 -- frames (we only create our own child overlay). Disableable via profile.
 local AUTO_DETECTORS = {
   -- Plater exposes nameplate lookup via its addon table (best-effort).
@@ -219,8 +246,8 @@ local AUTO_DETECTORS = {
 local function GetAutoDetectedParent(unit, profile)
   if not (profile and profile.autoDetect) then return nil end
   for _, detector in ipairs(AUTO_DETECTORS) do
-    local frame = detector(unit)
-    if type(frame) == "table" and frame.SetPoint then return frame end
+    local ok, frame = pcall(detector, unit)
+    if ok and IsFrameLike(frame) then return frame end
   end
   return nil
 end
@@ -311,7 +338,7 @@ local function ComputeSubzone(unit, profile)
       return nil
     end
     local info = SafeCall(C_Map.GetMapInfo, unitMap)
-    if type(info) ~= "table" or not IsReadable(info.name, "string") or info.name == "" then
+    if not IsReadable(info, "table") or not IsReadable(info.name, "string") or info.name == "" then
       SP.DebugPrint("map location hidden: map name unreadable")
       return nil
     end
@@ -321,24 +348,15 @@ local function ComputeSubzone(unit, profile)
   return SP.FormatTemplate(fmt, { zone = zoneName })
 end
 
--- Indoors/outdoors text or nil. Uses UnitIsIndoors when available; otherwise
--- falls back to an instance-based heuristic (player in instance + same map).
--- Hides when no supported API can answer.
+-- Indoors/outdoors text or nil. Only a readable UnitIsIndoors result is
+-- authoritative; being in an instance does not imply indoors. Hide otherwise.
 local function ComputeIndoors(unit, profile)
   if not (profile and profile.showIndoors) then return nil end
   local envText = nil
-  if UnitIsIndoors then
-    local indoors = SafeCall(UnitIsIndoors, unit)
+  if type(UnitIsIndoors) == "function" then
+    local indoors = SafeBooleanCall(UnitIsIndoors, unit)
     if indoors == true then envText = "Indoors"
     elseif indoors == false then envText = "Outdoors" end
-  end
-  if envText == nil and IsInInstance then
-    local inInstance = SafeCall(IsInInstance)
-    local playerMap = GetPlayerMapID()
-    local unitMap = GetUnitMapID(unit)
-    if inInstance == true and playerMap ~= nil and unitMap ~= nil and playerMap == unitMap then
-      envText = "Indoors"
-    end
   end
   if envText == nil then
     SP.DebugPrint("indoors hidden: no supported environment API")
@@ -356,8 +374,12 @@ local function ComputeUnderwater(unit, profile)
     return nil
   end
   local submerged = SafeCall(UnitIsSubmerged, unit)
-  -- UnitIsSubmerged returns 1 when submerged, nil otherwise. Only 1/true
-  -- counts as readable confirmation; anything else hides the field.
+  -- UnitIsSubmerged returns 1 when submerged, nil otherwise. Check secrecy
+  -- before even comparing the result; only a readable 1/true displays.
+  if not IsReadable(submerged) then
+    SP.DebugPrint("underwater hidden: value unreadable")
+    return nil
+  end
   if submerged ~= 1 and submerged ~= true then
     SP.DebugPrint("underwater hidden: not submerged or unreadable")
     return nil
@@ -386,21 +408,25 @@ end
 -- ---------------------------------------------------------------------------
 
 local function IsInCombat()
-  if InCombatLockdown then
-    return SafeCall(InCombatLockdown) == true
+  if type(InCombatLockdown) == "function" then
+    local state = SafeBooleanCall(InCombatLockdown)
+    -- Treat an unavailable/secret combat state conservatively as combat so
+    -- previously readable fields freeze rather than being refreshed.
+    if state == nil then return true end
+    return state
   end
   return false
 end
 
 local function IsPlayerInInstance()
-  if not IsInInstance then return false end
-  return SafeCall(IsInInstance) == true
+  if type(IsInInstance) ~= "function" then return false end
+  return SafeBooleanCall(IsInInstance) == true
 end
 
 local function IsUnitVisible(unit)
-  if not UnitIsVisible then return true end -- no API: assume visible
-  local v = SafeCall(UnitIsVisible, unit)
-  if v == nil then return true end -- unreadable: assume visible (don't hide)
+  if type(UnitIsVisible) ~= "function" then return true end -- no API: assume visible
+  local v = SafeBooleanCall(UnitIsVisible, unit)
+  if v == nil then return true end -- unreadable: assume visible (do not hide)
   return v == true
 end
 
@@ -411,16 +437,19 @@ local function ShouldShowOverlay(unit, profile, parent, distanceYards)
   if not profile.enabled then return false, "addon disabled" end
   if profile.hideInCombat and IsInCombat() then return false, "hideInCombat" end
   if profile.hideOutOfCombat and not IsInCombat() then return false, "hideOutOfCombat" end
-  if profile.hideWhenNameplateHidden and parent then
+  if profile.hideWhenNameplateHidden and parent and HasMethod(parent, "IsShown") then
     local shown = SafeCall(function() return parent:IsShown() end)
-    if shown == false then return false, "nameplate hidden" end
+    if IsReadable(shown, "boolean") and shown == false then
+      return false, "nameplate hidden"
+    end
   end
   if profile.hideWhenUnitNotVisible and not IsUnitVisible(unit) then
     return false, "unit not visible"
   end
   if profile.hideInInstances and IsPlayerInInstance() then return false, "hideInInstances" end
   if profile.hideInOpenWorld and not IsPlayerInInstance() then return false, "hideInOpenWorld" end
-  if profile.hideBeyondDistance and distanceYards ~= nil then
+  if profile.hideBeyondDistance then
+    if distanceYards == nil then return false, "distance unavailable for max-distance rule" end
     if distanceYards > (profile.maxDistance or 60) then
       return false, "beyond max distance"
     end
@@ -460,12 +489,21 @@ local function AnchorOverlay(overlay, parent, profile)
   local oy = profile.offsetY or 0
   overlay:ClearAllPoints()
   -- SetPoint(point, relativeTo, relativePoint, x, y). Anchor names like
-  -- "TOP-LEFT" are valid points. Guarded so a bad value never errors.
+  -- "TOP-LEFT" are valid points. Validate and guard frame operations.
   local ok = pcall(overlay.SetPoint, overlay, anchorTo, parent, anchor, ox, oy)
   if not ok then
     SP.DebugPrint("anchor failed for " .. tostring(anchorTo) .. "->" .. tostring(anchor))
     pcall(overlay.SetPoint, overlay, "TOP", parent, "TOP", 0, 4)
   end
+end
+
+local function HideOverlay(overlay)
+  if not overlay then return end
+  pcall(function()
+    overlay:Hide()
+    if overlay._spText then overlay._spText:SetText("") end
+    overlay._spLastText = ""
+  end)
 end
 
 -- Update one unit's overlay: compute fields, apply visibility, set text.
@@ -480,12 +518,12 @@ local function UpdateOverlay(unit)
   -- change while these nameplate tokens remain tracked; hide rather than
   -- leaving stale overlays visible. They can show again if the filter changes.
   if not SP.IsFriendlyPlayer(unit) then
-    overlay:Hide()
+    HideOverlay(overlay)
     SP.DebugPrint("overlay hidden for " .. unit .. ": no longer a friendly player")
     return
   end
   if not SP.PassesFilter(unit, profile) then
-    overlay:Hide()
+    HideOverlay(overlay)
     SP.DebugPrint("overlay hidden for " .. unit .. ": filter=" .. tostring(profile.filter))
     return
   end
@@ -493,7 +531,7 @@ local function UpdateOverlay(unit)
   -- Re-resolve parent (nameplate may have changed; custom func may return new).
   local parent = SP.ResolveParent(unit, profile)
   if not parent then
-    overlay:Hide()
+    HideOverlay(overlay)
     SP.DebugPrint("overlay hidden for " .. unit .. ": no parent frame")
     return
   end
@@ -513,7 +551,10 @@ local function UpdateOverlay(unit)
   -- Freeze last known non-secret values while in combat.
   local last = SP._lastFields[unit] or {}
   if IsInCombat() then
-    if distText == nil and last.distance then distText = last.distance end
+    if distText == nil and last.distance then
+      distText = last.distance
+      if distYards == nil then distYards = last.distanceYards end
+    end
     if subText == nil and last.subzone then subText = last.subzone end
     if envText == nil and last.indoors then envText = last.indoors end
     if waterText == nil and last.underwater then waterText = last.underwater end
@@ -521,6 +562,7 @@ local function UpdateOverlay(unit)
   else
     -- Out of combat: remember newly readable values for future freezes.
     if distText then last.distance = distText end
+    if IsReadable(distYards, "number") then last.distanceYards = distYards end
     if subText then last.subzone = subText end
     if envText then last.indoors = envText end
     if waterText then last.underwater = waterText end
@@ -537,12 +579,12 @@ local function UpdateOverlay(unit)
   -- Visibility rules.
   local visible, reason = ShouldShowOverlay(unit, profile, parent, distYards)
   if not visible then
-    overlay:Hide()
+    HideOverlay(overlay)
     SP.DebugPrint("overlay hidden for " .. unit .. ": " .. tostring(reason))
     return
   end
   if combined == "" then
-    overlay:Hide()
+    HideOverlay(overlay)
     SP.DebugPrint("overlay hidden for " .. unit .. ": no readable fields")
     return
   end
@@ -572,7 +614,7 @@ local function UpdateOverlay(unit)
     if ok then
       overlay._spAppearanceRevision = appearanceRevision
     else
-      SP.DebugPrint("appearance apply failed for " .. unit .. ": " .. tostring(err))
+      SP.DebugPrint("appearance apply failed")
     end
   end
   if overlay._spLastText ~= combined then
@@ -590,7 +632,7 @@ function SP.RefreshAllOverlays()
   for unit in pairs(SP._overlays) do units[#units + 1] = unit end
   for _, unit in ipairs(units) do
     local ok, err = pcall(UpdateOverlay, unit)
-    if not ok then SP.DebugPrint("update failed for " .. tostring(unit) .. ": " .. tostring(err)) end
+    if not ok then SP.DebugPrint("overlay update failed") end
   end
 end
 
@@ -613,18 +655,13 @@ local function EnsureOverlay(unit)
     if existing._spParent ~= parent then
       existing:SetParent(parent)
       existing._spParent = parent
+      existing._spAnchorState = nil
     end
     return existing
   end
-  -- Reuse a leftover overlay on the parent (nameplate reuse) if present.
-  if parent._spOverlay then
-    local reused = parent._spOverlay
-    reused._spUnit = unit
-    SP._overlays[unit] = reused
-    return reused
-  end
+  -- Never write bookkeeping fields onto nameplate/custom-parent frames: the
+  -- only integration-side mutation is parenting our own overlay as a child.
   local overlay = CreateOverlay(unit, parent)
-  parent._spOverlay = overlay
   SP._overlays[unit] = overlay
   return overlay
 end
@@ -636,16 +673,11 @@ local function CleanupOverlay(unit)
   local overlay = SP._overlays[unit]
   if overlay then
     local ok = pcall(function()
-      overlay:Hide()
+      HideOverlay(overlay)
       overlay:SetParent(nil)
       overlay:SetScript("OnUpdate", nil)
     end)
     if not ok then SP.DebugPrint("cleanup failed for " .. tostring(unit)) end
-    -- Clear the parent's reuse slot if it still points at this overlay.
-    local parent = overlay._spParent
-    if parent and parent._spOverlay == overlay then
-      parent._spOverlay = nil
-    end
     SP._overlays[unit] = nil
   end
   SP._lastFields[unit] = nil
@@ -661,7 +693,7 @@ local function ScanNameplates()
     local unit = GetNameplateUnit(plate)
     if unit then
       local ok, err = pcall(EnsureOverlay, unit)
-      if not ok then SP.DebugPrint("scan failed for " .. tostring(unit) .. ": " .. tostring(err)) end
+      if not ok then SP.DebugPrint("nameplate scan failed") end
     end
   end
 end
@@ -733,7 +765,7 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
     -- Spatial Plates. Preset application changes only our own visual profile.
     if SP.AutoMatchNameplateTheme then
       local ok, err = pcall(SP.AutoMatchNameplateTheme, unit)
-      if not ok then SP.DebugPrint("theme auto-match failed: " .. tostring(err)) end
+      if not ok then SP.DebugPrint("theme auto-match failed") end
     end
     if unit ~= "SpatialPlates" then return end
     -- DB is initialized by Config.lua's ADDON_LOADED handler; ensure here too
@@ -743,16 +775,16 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
     RestartTicker()
     SP.RefreshAllOverlays()
   elseif event == "NAME_PLATE_UNIT_ADDED" then
-    if type(unit) == "string" then
+    if IsReadable(unit, "string") then
       local ok, err = pcall(EnsureOverlay, unit)
-      if not ok then SP.DebugPrint("ADDED failed for " .. tostring(unit) .. ": " .. tostring(err)) end
+      if not ok then SP.DebugPrint("nameplate add handling failed") end
       local ok2, err2 = pcall(UpdateOverlay, unit)
-      if not ok2 then SP.DebugPrint("ADDED update failed for " .. tostring(unit) .. ": " .. tostring(err2)) end
+      if not ok2 then SP.DebugPrint("nameplate add update failed") end
     end
   elseif event == "NAME_PLATE_UNIT_REMOVED" then
-    if type(unit) == "string" then
+    if IsReadable(unit, "string") then
       local ok, err = pcall(CleanupOverlay, unit)
-      if not ok then SP.DebugPrint("REMOVED cleanup failed for " .. tostring(unit) .. ": " .. tostring(err)) end
+      if not ok then SP.DebugPrint("nameplate cleanup failed") end
     end
   elseif event == "PLAYER_ENTERING_WORLD"
     or event == "GROUP_ROSTER_UPDATE"
