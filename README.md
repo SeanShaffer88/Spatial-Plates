@@ -7,11 +7,12 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 ## Installation
 
 1. Download or clone this repository.
-2. Copy the `Spatial-Plates` folder into your WoW addons folder:
-   - Windows: `World of Warcraft\_classic_\Interface\AddOns\Spatial-Plates`
-   - macOS: `~/Documents/Blizzard Entertainment/World of Warcraft/_classic_/Interface/AddOns/Spatial-Plates`
-3. Make sure the folder contains `SpatialPlates.toc` (the folder name must match the TOC name).
-4. Restart the game (or `/reload`) and enable **Spatial Plates** in the AddOns list.
+2. In the client’s active WoW installation, create an addon folder named **`SpatialPlates`** (no hyphen) inside `Interface/AddOns`:
+   - Windows Classic: `World of Warcraft\_classic_\Interface\AddOns\SpatialPlates`
+   - Windows Classic Era: `World of Warcraft\_classic_era_\Interface\AddOns\SpatialPlates`
+   - macOS: use the matching client folder under `~/Documents/Blizzard Entertainment/World of Warcraft/`, then `Interface/AddOns/SpatialPlates`.
+3. Copy the addon files directly into `SpatialPlates`, so `SpatialPlates.toc` is at `.../AddOns/SpatialPlates/SpatialPlates.toc` next to `Config.lua`, `Presets.lua`, `Appearance.lua`, and `Core.lua`. If you extracted the GitHub source archive, rename its `Spatial-Plates` or `Spatial-Plates-main` directory to `SpatialPlates` (do not leave an extra nested folder).
+4. Fully restart the game, select the intended client/version, open **AddOns** on the character-select screen, and enable **Spatial Plates**. If it is listed as out of date, enable **Load out of date AddOns**; `## Interface: 16001` may not match your client.
 5. Type `/splates` in game to see commands, or `/splates config` to open the options panel.
 
 ## TOC Interface version — please verify

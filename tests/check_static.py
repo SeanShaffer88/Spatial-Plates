@@ -38,6 +38,11 @@ if not (required_toc.index("Config.lua") < required_toc.index("Presets.lua") < r
     print("FAIL TOC load order")
     sys.exit(1)
 
+readme = (ROOT / "README.md").read_text(encoding="utf-8")
+if "AddOns/SpatialPlates/SpatialPlates.toc" not in readme:
+    print("FAIL installation instructions must use a SpatialPlates folder matching the TOC")
+    sys.exit(1)
+
 for token in ("issecretvalue", "UnitDistanceSquared", "C_Map.GetBestMapForUnit", "NAME_PLATE_UNIT_REMOVED"):
     if token not in source:
         print("FAIL missing defensive mechanism:", token)
