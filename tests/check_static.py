@@ -4,7 +4,8 @@ import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-LUA_FILES = [ROOT / name for name in ("Config.lua", "Presets.lua", "Appearance.lua", "Core.lua")]
+ADDON_DIR = ROOT / "SpatialPlates"
+LUA_FILES = [ADDON_DIR / name for name in ("Config.lua", "Presets.lua", "Appearance.lua", "Core.lua")]
 source = "\n".join(path.read_text(encoding="utf-8") for path in LUA_FILES)
 
 FORBIDDEN = re.compile(
@@ -20,7 +21,7 @@ if violations:
     print("FAIL forbidden combat or secure-hook API tokens:", sorted(set(violations)))
     sys.exit(1)
 
-required_toc = (ROOT / "SpatialPlates.toc").read_text(encoding="utf-8")
+required_toc = (ADDON_DIR / "SpatialPlates.toc").read_text(encoding="utf-8")
 required_lines = [
     "## Interface: 16001",
     "## Title: Spatial Plates",
@@ -38,7 +39,7 @@ if not (required_toc.index("Config.lua") < required_toc.index("Presets.lua") < r
     print("FAIL TOC load order")
     sys.exit(1)
 toc_version = re.search(r"^## Version: (.+)$", required_toc, re.MULTILINE)
-config_version = re.search(r'^SP\._VERSION = "(.+)"$', (ROOT / "Config.lua").read_text(encoding="utf-8"), re.MULTILINE)
+config_version = re.search(r'^SP\._VERSION = "(.+)"$', (ADDON_DIR / "Config.lua").read_text(encoding="utf-8"), re.MULTILINE)
 if not toc_version or not config_version or toc_version.group(1) != config_version.group(1):
     print("FAIL addon version differs between TOC and Config.lua")
     sys.exit(1)
