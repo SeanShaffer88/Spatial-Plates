@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+      - name: Lua regression suite
+        run: lua5.1 tests/run.lua
+      - name: Static safety checks
+        run: python3 tests/check_static.py
+      - name: Package layout
+        run: python3 tests/test_package.py

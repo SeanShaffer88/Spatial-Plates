@@ -337,43 +337,26 @@ local function GetUnitMapID(unit)
   return nil
 end
 
--- Coarse range buckets from CheckInteractDistance, which works on any unit
--- (UnitDistanceSquared and C_Map.GetBestMapForUnit only report the player's
--- party/raid members). Index 3 = duel range (~10y), index 4 = follow (~28y).
-local COARSE_BUCKETS = {
-  { index = 3, label = "<10", yards = 10 },
-  { index = 4, label = "<28", yards = 28 },
-}
-
--- Returns (label, upperBoundYards) or nil when the range API is missing,
--- errors, or returns an unreadable value. Beyond the last bucket returns
--- (">28", nil): the upper bound is unknown.
-local function ComputeCoarseRange(unit)
-  if type(CheckInteractDistance) ~= "function" then return nil end
-  for _, bucket in ipairs(COARSE_BUCKETS) do
-    local ok, inRange = pcall(CheckInteractDistance, unit, bucket.index)
-    if not ok or not IsReadable(inRange) then return nil end
-    if inRange == true or inRange == 1 then return bucket.label, bucket.yards end
-  end
-  return ">28", nil
-end
-
-local function FormatCoarse(unit, profile, reason)
-  local label, yards = ComputeCoarseRange(unit)
+-- Estimated range (Range.lua) formatted with the distance template.
+-- Returns (text, upperYards, false) or nil; the false marks it as estimated.
+local function FormatEstimate(unit, profile, reason)
+  local label, yards
+  if SP.EstimateRange then label, yards = SP.EstimateRange(unit) end
   if not label then
     SP.DebugPrint("distance hidden: " .. reason)
     return nil
   end
   local fmt = (profile.formats and profile.formats.distance) or "{d}y"
-  return SP.FormatTemplate(fmt, { d = label }), yards
+  return SP.FormatTemplate(fmt, { d = label }), yards, false
 end
 
 -- Distance in yards (integer) or nil. Exact distance requires
 -- UnitDistanceSquared AND a same-map check via C_Map (party/raid members);
--- players those APIs cannot measure (outside the group) fall back to coarse
--- CheckInteractDistance buckets. Secret or erroring values still hide. Never
--- does arithmetic on secret values: the sqrt only runs after IsReadable
--- confirms a plain number.
+-- units those APIs cannot measure (outside the group, NPCs) fall back to the
+-- spell / interact-distance estimate from Range.lua. Secret or erroring
+-- values still hide. Third return value: true for exact, false for estimated.
+-- Never does arithmetic on secret values: the sqrt only runs after
+-- IsReadable confirms a plain number.
 local function ComputeDistance(unit, profile)
   if not (profile and profile.showDistance) then return nil end
   if not UnitDistanceSquared then
@@ -388,7 +371,7 @@ local function ComputeDistance(unit, profile)
   -- checkedDistance == false means the client could not measure this unit
   -- (not in the player's group); the returned distance is meaningless.
   if checked ~= nil and not (IsReadable(checked, "boolean") and checked == true) then
-    return FormatCoarse(unit, profile, "UnitDistanceSquared unchecked")
+    return FormatEstimate(unit, profile, "UnitDistanceSquared unchecked")
   end
   if distSq < 0 then
     SP.DebugPrint("distance hidden: negative value")
@@ -398,7 +381,7 @@ local function ComputeDistance(unit, profile)
   local playerMap = GetPlayerMapID()
   local unitMap = GetUnitMapID(unit)
   if playerMap == nil or unitMap == nil then
-    return FormatCoarse(unit, profile, "map data unavailable")
+    return FormatEstimate(unit, profile, "map data unavailable")
   end
   if playerMap ~= unitMap then
     SP.DebugPrint("distance hidden: different map")
@@ -407,7 +390,7 @@ local function ComputeDistance(unit, profile)
   -- distSq is confirmed readable (plain number), so sqrt is safe.
   local yards = math.floor(math.sqrt(distSq) + 0.5)
   local fmt = (profile.formats and profile.formats.distance) or "{d}y"
-  return SP.FormatTemplate(fmt, { d = tostring(yards) }), yards
+  return SP.FormatTemplate(fmt, { d = tostring(yards) }), yards, true
 end
 
 -- Map-location text or nil. GetBestMapForUnit is map-granular, not a true subzone query.
@@ -575,12 +558,8 @@ end
 
 -- Anchor the overlay to its parent per profile. Re-run every tick so custom
 -- parents that move are followed (we only move our own child frame).
-local function AnchorOverlay(overlay, parent, profile)
+local function AnchorOverlay(overlay, parent, anchor, anchorTo, ox, oy)
   if not overlay or not parent then return end
-  local anchor = profile.anchor or "TOP"
-  local anchorTo = profile.anchorTo or "TOP"
-  local ox = profile.offsetX or 0
-  local oy = profile.offsetY or 0
   overlay:ClearAllPoints()
   -- SetPoint(point, relativeTo, relativePoint, x, y). Anchor names like
   -- "TOP-LEFT" are valid points. Validate and guard frame operations.
@@ -600,6 +579,105 @@ local function HideOverlay(overlay)
   end)
 end
 
+-- ---------------------------------------------------------------------------
+-- Eligibility cache
+-- ---------------------------------------------------------------------------
+
+-- Eligibility (mode toggles + filter) changes rarely: on roster, friend-list,
+-- faction and profile changes. Cache it per unit token and invalidate on
+-- those events; a short TTL self-heals anything an event misses. Without a
+-- readable GetTime the cache is bypassed.
+local ELIGIBILITY_TTL = 2
+local MODE_KEYS = {
+  "filter", "showGlobal", "showParty", "showFriendsList", "showEnemyPlayers", "showEnemyNPCs",
+}
+SP._eligCache = {}
+
+function SP.InvalidateEligibility(unit)
+  if unit then SP._eligCache[unit] = nil else SP._eligCache = {} end
+end
+
+-- Returns (wanted, reasonWhenNot).
+function SP.IsUnitWanted(unit, profile)
+  local now = (type(GetTime) == "function") and SafeCall(GetTime) or nil
+  if not IsReadable(now, "number") then now = nil end
+  local entry = SP._eligCache[unit]
+  if entry and now and entry.profile == profile and now - entry.t < ELIGIBILITY_TTL then
+    local same = true
+    for _, key in ipairs(MODE_KEYS) do
+      if entry[key] ~= profile[key] then same = false; break end
+    end
+    if same then return entry.value, entry.reason end
+  end
+  local value, reason = true, nil
+  if not SP.IsEligibleUnit(unit, profile) then
+    value, reason = false, "not an eligible unit"
+  elseif not SP.PassesFilter(unit, profile) then
+    value, reason = false, "filter=" .. tostring(profile.filter)
+  end
+  if now then
+    entry = { value = value, reason = reason, t = now, profile = profile }
+    for _, key in ipairs(MODE_KEYS) do entry[key] = profile[key] end
+    SP._eligCache[unit] = entry
+  end
+  return value, reason
+end
+
+-- ---------------------------------------------------------------------------
+-- Marker position (nameplate or feet)
+-- ---------------------------------------------------------------------------
+
+-- Feet mode asks the client to draw other units' nameplates at their base
+-- via the nameplateOtherAtBase CVar (our marker then sits just under the
+-- plate). The previous value is saved and restored when feet mode is turned
+-- off. If the client has no such CVar, the marker stays at the nameplate.
+local FEET_CVAR = "nameplateOtherAtBase"
+SP._feetActive = false
+
+local function ReadCVar(name)
+  local getter = (C_CVar and C_CVar.GetCVar) or GetCVar
+  local value = SafeCall(getter, name)
+  if IsReadable(value, "string") then return value end
+  return nil
+end
+
+local function WriteCVar(name, value)
+  local setter = (C_CVar and C_CVar.SetCVar) or SetCVar
+  if type(setter) ~= "function" then return false end
+  local ok = pcall(setter, name, value)
+  return ok
+end
+
+function SP.ApplyMarkerPosition()
+  local profile = SP.GetProfile()
+  local db = SP.EnsureDB()
+  local current = ReadCVar(FEET_CVAR)
+  if current == nil then
+    SP._feetActive = false
+    if profile.markerAtFeet and not SP._feetUnsupportedWarned then
+      SP._feetUnsupportedWarned = true
+      print("|cff33ccffSpatial Plates:|r this client cannot draw nameplates at feet; the marker stays at the nameplate.")
+    end
+    return
+  end
+  if IsInCombat() then
+    -- Nameplate CVars may be locked in combat; apply when combat ends.
+    SP._pendingMarkerApply = true
+    return
+  end
+  SP._pendingMarkerApply = false
+  if profile.markerAtFeet then
+    if current ~= "1" then
+      if db.savedOtherAtBase == nil then db.savedOtherAtBase = current end
+      WriteCVar(FEET_CVAR, "1")
+    end
+  elseif db.savedOtherAtBase ~= nil then
+    WriteCVar(FEET_CVAR, db.savedOtherAtBase)
+    db.savedOtherAtBase = nil
+  end
+  SP._feetActive = profile.markerAtFeet == true and ReadCVar(FEET_CVAR) == "1"
+end
+
 -- Update one unit's overlay: compute fields, apply visibility, set text.
 -- In combat, unreadable fields freeze at their last readable value instead
 -- of clearing (never compute on secrets).
@@ -611,14 +689,10 @@ local function UpdateOverlay(unit)
   -- Re-check eligibility and the active filter on every refresh. Filters can
   -- change while these nameplate tokens remain tracked; hide rather than
   -- leaving stale overlays visible. They can show again if the filter changes.
-  if not SP.IsEligibleUnit(unit, profile) then
+  local wanted, notWantedReason = SP.IsUnitWanted(unit, profile)
+  if not wanted then
     HideOverlay(overlay)
-    SP.DebugPrint("overlay hidden for " .. unit .. ": not an eligible unit")
-    return
-  end
-  if not SP.PassesFilter(unit, profile) then
-    HideOverlay(overlay)
-    SP.DebugPrint("overlay hidden for " .. unit .. ": filter=" .. tostring(profile.filter))
+    SP.DebugPrint("overlay hidden for " .. unit .. ": " .. tostring(notWantedReason))
     return
   end
 
@@ -636,13 +710,15 @@ local function UpdateOverlay(unit)
   end
 
   -- Compute each field (each hides cleanly when unreadable).
-  local distText, distYards = ComputeDistance(unit, profile)
+  local distText, distYards, distExact = ComputeDistance(unit, profile)
   local subText = ComputeSubzone(unit, profile)
   local envText = ComputeIndoors(unit, profile)
   local waterText = ComputeUnderwater(unit, profile)
   local dirText = ComputeBearing(unit, profile)
 
-  -- Freeze last known non-secret values while in combat.
+  -- Freeze last known non-secret values while in combat. Only exact
+  -- distances freeze: an estimated range that stops answering in combat is
+  -- hidden rather than shown stale while the unit moves.
   local last = SP._lastFields[unit] or {}
   if IsInCombat() then
     if distText == nil and last.distance then
@@ -655,8 +731,12 @@ local function UpdateOverlay(unit)
     if dirText == nil and last.bearing then dirText = last.bearing end
   else
     -- Out of combat: remember newly readable values for future freezes.
-    if distText then last.distance = distText end
-    if IsReadable(distYards, "number") then last.distanceYards = distYards end
+    if distText and distExact then
+      last.distance = distText
+      if IsReadable(distYards, "number") then last.distanceYards = distYards end
+    elseif distText then
+      last.distance, last.distanceYards = nil, nil
+    end
     if subText then last.subzone = subText end
     if envText then last.indoors = envText end
     if waterText then last.underwater = waterText end
@@ -689,11 +769,15 @@ local function UpdateOverlay(unit)
   local anchorTo = profile.anchorTo or "TOP"
   local offsetX = profile.offsetX or 0
   local offsetY = profile.offsetY or 0
+  if SP._feetActive then
+    -- Nameplate is drawn at the unit's base: hang the marker just under it.
+    anchor, anchorTo, offsetY = "BOTTOM", "TOP", 0
+  end
   local anchorState = overlay._spAnchorState
   if not anchorState or anchorState.parent ~= parent
     or anchorState.anchor ~= anchor or anchorState.anchorTo ~= anchorTo
     or anchorState.offsetX ~= offsetX or anchorState.offsetY ~= offsetY then
-    AnchorOverlay(overlay, parent, profile)
+    AnchorOverlay(overlay, parent, anchor, anchorTo, offsetX, offsetY)
     overlay._spAnchorState = {
       parent = parent, anchor = anchor, anchorTo = anchorTo,
       offsetX = offsetX, offsetY = offsetY,
@@ -734,9 +818,9 @@ end
 -- or nil when the unit is not an eligible player.
 local function EnsureOverlay(unit)
   local profile = SP.GetProfile()
-  if not SP.IsEligibleUnit(unit, profile) then return nil end
-  if not SP.PassesFilter(unit, profile) then
-    SP.DebugPrint("overlay skipped for " .. unit .. ": filter=" .. tostring(profile.filter))
+  local wanted, notWantedReason = SP.IsUnitWanted(unit, profile)
+  if not wanted then
+    SP.DebugPrint("overlay skipped for " .. unit .. ": " .. tostring(notWantedReason))
     return nil
   end
   local parent = SP.ResolveParent(unit, profile)
@@ -775,6 +859,8 @@ local function CleanupOverlay(unit)
     SP._overlays[unit] = nil
   end
   SP._lastFields[unit] = nil
+  SP.InvalidateEligibility(unit)
+  if SP.ForgetRange then SP.ForgetRange(unit) end
 end
 SP.CleanupOverlay = CleanupOverlay
 
@@ -855,6 +941,7 @@ mainFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 mainFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 mainFrame:RegisterEvent("ZONE_CHANGED")
 mainFrame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
+pcall(mainFrame.RegisterEvent, mainFrame, "UNIT_FACTION")
 
 mainFrame:SetScript("OnEvent", function(self, event, unit)
   if event == "ADDON_LOADED" then
@@ -868,11 +955,15 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
     -- DB is initialized by Config.lua's ADDON_LOADED handler; ensure here too
     -- (handlers run in registration order, but be defensive).
     SP.EnsureDB()
+    pcall(SP.ApplyMarkerPosition)
     ScanNameplates()
     RestartTicker()
     SP.RefreshAllOverlays()
   elseif event == "NAME_PLATE_UNIT_ADDED" then
     if IsReadable(unit, "string") then
+      -- Tokens are reused for different units: drop anything cached.
+      SP.InvalidateEligibility(unit)
+      if SP.ForgetRange then SP.ForgetRange(unit) end
       local ok, err = pcall(EnsureOverlay, unit)
       if not ok then SP.DebugPrint("nameplate add handling failed") end
       local ok2, err2 = pcall(UpdateOverlay, unit)
@@ -883,6 +974,13 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
       local ok, err = pcall(CleanupOverlay, unit)
       if not ok then SP.DebugPrint("nameplate cleanup failed") end
     end
+  elseif event == "UNIT_FACTION" then
+    -- PvP flag / duel / reaction changes: re-check eligibility and colors.
+    if IsReadable(unit, "string") and SP._overlays[unit] then
+      SP.InvalidateEligibility(unit)
+      SP._overlays[unit]._spAppearanceRevision = nil
+      pcall(UpdateOverlay, unit)
+    end
   elseif event == "PLAYER_ENTERING_WORLD"
     or event == "GROUP_ROSTER_UPDATE"
     or event == "FRIENDLIST_UPDATE"
@@ -892,6 +990,12 @@ mainFrame:SetScript("OnEvent", function(self, event, unit)
     or event == "ZONE_CHANGED"
     or event == "ZONE_CHANGED_NEW_AREA" then
     -- Roster/combat/zone changes can affect eligibility or visibility.
+    if event ~= "PLAYER_REGEN_DISABLED" and event ~= "PLAYER_REGEN_ENABLED" then
+      SP.InvalidateEligibility()
+    end
+    if event == "PLAYER_ENTERING_WORLD" or (event == "PLAYER_REGEN_ENABLED" and SP._pendingMarkerApply) then
+      pcall(SP.ApplyMarkerPosition)
+    end
     ScanNameplates()
     SP.RefreshAllOverlays()
   end

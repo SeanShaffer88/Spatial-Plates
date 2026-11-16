@@ -17,6 +17,7 @@ local MODES = {
   { key = "showFriendsList", label = "Friends-list friends" },
   { key = "showEnemyPlayers", label = "Enemy players" },
   { key = "showEnemyNPCs", label = "Enemy NPCs" },
+  { key = "markerAtFeet", label = "Marker at feet" },
 }
 
 local button, menu
@@ -62,6 +63,9 @@ local function CreateMenu()
     c:SetScript("OnClick", function(self)
       local ok, checked = pcall(self.GetChecked, self)
       SP.SetProfileValue(self._spKey, ok and checked == true)
+      if self._spKey == "markerAtFeet" and SP.ApplyMarkerPosition then
+        pcall(SP.ApplyMarkerPosition)
+      end
       RefreshMenuChecks()
     end)
     f._spChecks[#f._spChecks + 1] = c

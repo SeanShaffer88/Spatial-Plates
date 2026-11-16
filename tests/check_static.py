@@ -5,7 +5,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 ADDON_DIR = ROOT / "SpatialPlates"
-LUA_FILES = [ADDON_DIR / name for name in ("Config.lua", "Presets.lua", "Appearance.lua", "Core.lua", "Minimap.lua")]
+LUA_FILES = [ADDON_DIR / name for name in ("Config.lua", "Presets.lua", "Appearance.lua", "Range.lua", "Core.lua", "Minimap.lua")]
 source = "\n".join(path.read_text(encoding="utf-8") for path in LUA_FILES)
 
 FORBIDDEN = re.compile(
@@ -29,6 +29,7 @@ required_lines = [
     "Config.lua",
     "Presets.lua",
     "Appearance.lua",
+    "Range.lua",
     "Core.lua",
     "Minimap.lua",
 ]
@@ -36,7 +37,7 @@ for line in required_lines:
     if line not in required_toc:
         print("FAIL TOC missing:", line)
         sys.exit(1)
-if not (required_toc.index("Config.lua") < required_toc.index("Presets.lua") < required_toc.index("Appearance.lua") < required_toc.index("Core.lua") < required_toc.index("Minimap.lua")):
+if not (required_toc.index("Config.lua") < required_toc.index("Presets.lua") < required_toc.index("Appearance.lua") < required_toc.index("Range.lua") < required_toc.index("Core.lua") < required_toc.index("Minimap.lua")):
     print("FAIL TOC load order")
     sys.exit(1)
 toc_version = re.search(r"^## Version: (.+)$", required_toc, re.MULTILINE)

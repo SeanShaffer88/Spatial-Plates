@@ -34,7 +34,10 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
   - **Enemy players** — players who are not friendly (opposite faction, duel/PvP).
   - **Enemy NPCs** — NPCs you can attack (hostile and neutral mobs, enemy pets).
   The `filter` setting below narrows **friendly players** only.
-- **Distance for players outside your group:** the client only reports exact distance and map for party/raid members, so other players and NPCs show a coarse range from `CheckInteractDistance`: `<10y`, `<28y`, or `>28y`. Map name, indoors and underwater are not available for them.
+- **Distance for units outside your group:** the client reports exact distance and map only for party/raid members. Everyone else (other players, all NPCs) shows an **estimated range** such as `<20y` or `>40y`. The steps come from your own spells: every active spell with a range (and no minimum range) adds a step, so the steps depend on your class and level. Helpful spells measure friendly units and harmful spells measure enemies. `CheckInteractDistance` always adds `<10y` and `<28y`. Map name, indoors and underwater are not available for these units.
+- **In combat:** exact group distances keep their last value if the game stops reporting them. Estimated ranges are hidden instead of frozen, so a mob you are kiting never shows an old range.
+- **Colors:** text is colored by reaction by default: green friendly, yellow neutral, red hostile. Profiles that still used the old untouched white default switch to reaction colors once; profiles with a custom color keep it.
+- **Marker at feet:** turn on **Marker at feet** in the minimap popup, the Options panel, or with `/splates feet on`. The game has no way to place addon text at a unit's feet, so this sets the game's `nameplateOtherAtBase` setting, which draws **all** other units' nameplates at their feet, and hangs the marker just under the plate. The previous value is saved and restored when you turn it off. If you disable the addon while feet mode is on, run `/splates feet off` first or the nameplates stay at feet. The change waits until combat ends. On a client without that setting the marker stays at the nameplate and you get one chat notice.
 - By default the overlay sits **above** the nameplate and shows `12y | Same map`.
 - Distance appears only when readable **and** you and the unit are on the same map.
 - The location field compares `C_Map.GetBestMapForUnit`: same map displays `Same map`, otherwise it displays the unit's map name. This API is **not subzone-granular**, so the addon does not claim the players share a subzone; the field hides cleanly when map data is unavailable.
@@ -57,6 +60,7 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 | `/splates global [on\|off]` | Toggle All friendly players |
 | `/splates enemyplayers [on\|off]` | Toggle Enemy players |
 | `/splates enemynpcs [on\|off]` | Toggle Enemy NPCs |
+| `/splates feet [on\|off]` | Put the marker at units' feet (moves nameplates) |
 | `/splates party [on\|off]` | Toggle Party / raid mode |
 | `/splates friendslist [on\|off]` | Toggle Friends-list mode |
 | `/splates minimap [on\|off]` | Show/hide the minimap button |
@@ -117,9 +121,10 @@ Enable **Auto-detect nameplate addons** in the options panel to allow read-only 
 | `SpatialPlates/Presets.lua` | Theme presets (partial profile tables) |
 | `SpatialPlates/Appearance.lua` | Data-driven appearance application + text formatting |
 | `SpatialPlates/Core.lua` | Nameplate detection, eligibility, field computation, visibility, ticker, cleanup |
-| `SpatialPlates/Minimap.lua` | Minimap button and the player-mode popup |
+| `SpatialPlates/Range.lua` | Estimated range steps from the player's spellbook and interaction distances |
+| `SpatialPlates/Minimap.lua` | Minimap button and the mode popup |
 
-Load order in `SpatialPlates/SpatialPlates.toc` is `Config.lua → Presets.lua → Appearance.lua → Core.lua → Minimap.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
+Load order in `SpatialPlates/SpatialPlates.toc` is `Config.lua → Presets.lua → Appearance.lua → Range.lua → Core.lua → Minimap.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
 
 ## Testing
 
@@ -137,6 +142,8 @@ Build the installable archive (its top-level addon folder is named `SpatialPlate
 python3 scripts/package_release.py
 ```
 
+GitHub Actions runs all three on every pull request and on pushes to `main` (`.github/workflows/tests.yml`, Lua 5.1).
+
 The Lua suite uses a deliberately small fake WoW API; it has no third-party Lua test framework dependency. The static script checks TOC/version/load order and scans addon Lua sources for prohibited combat-data/secure-hook API names. The package test confirms the release ZIP has the exact installable directory layout.
 
 ## In-client testing checklist
@@ -144,7 +151,7 @@ The Lua suite uses a deliberately small fake WoW API; it has no third-party Lua 
 Mocked Lua tests and static checks can verify control flow, but they do not reproduce the WoW client. **A live Classic Forever client smoke test has not been run in this workspace.** Before release, verify the current interface number and run the checks below in the target client, especially friend-list API behavior and repeated nameplate-token reuse.
 
 1. **Loads cleanly:** `/reload` in and out of combat — no Lua errors.
-2. **Modes:** with defaults, overlays appear on friendly players, enemy players and attackable NPCs (not friendly NPCs, not yourself) with a coarse `<10y` / `<28y` / `>28y` range outside your group; toggle each mode in the minimap popup and confirm the matching plates appear and disappear.
+2. **Modes:** with defaults, overlays appear on friendly players, enemy players and attackable NPCs (not friendly NPCs, not yourself) with an estimated range outside your group (steps from your spells plus `<10y` / `<28y`); confirm hostile text is red and friendly text green; enter combat with a mob and confirm its range never sticks at an old value; turn on **Marker at feet** and confirm plates and markers move to units' feet, then turn it off and confirm they return; toggle each mode in the minimap popup and confirm the matching plates appear and disappear.
 3. **Distance:** appears when readable and same-map; hidden otherwise (e.g. different map, or API unavailable).
 4. **Map location:** shows `Same map` / map name (not subzone-level); hides cleanly when map data is unavailable.
 5. **No combat APIs:** grep the code — no health/power/aura/cooldown/threat/combat-log usage.
