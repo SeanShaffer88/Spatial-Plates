@@ -37,6 +37,11 @@ for line in required_lines:
 if not (required_toc.index("Config.lua") < required_toc.index("Presets.lua") < required_toc.index("Appearance.lua") < required_toc.index("Core.lua")):
     print("FAIL TOC load order")
     sys.exit(1)
+toc_version = re.search(r"^## Version: (.+)$", required_toc, re.MULTILINE)
+config_version = re.search(r'^SP\._VERSION = "(.+)"$', (ROOT / "Config.lua").read_text(encoding="utf-8"), re.MULTILINE)
+if not toc_version or not config_version or toc_version.group(1) != config_version.group(1):
+    print("FAIL addon version differs between TOC and Config.lua")
+    sys.exit(1)
 
 readme = (ROOT / "README.md").read_text(encoding="utf-8")
 if "AddOns/SpatialPlates/SpatialPlates.toc" not in readme:

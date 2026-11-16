@@ -6,12 +6,12 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 
 ## Installation
 
-1. Download or clone this repository.
-2. In the client’s active WoW installation, create an addon folder named **`SpatialPlates`** (no hyphen) inside `Interface/AddOns`:
-   - Windows Classic: `World of Warcraft\_classic_\Interface\AddOns\SpatialPlates`
-   - Windows Classic Era: `World of Warcraft\_classic_era_\Interface\AddOns\SpatialPlates`
-   - macOS: use the matching client folder under `~/Documents/Blizzard Entertainment/World of Warcraft/`, then `Interface/AddOns/SpatialPlates`.
-3. Copy the addon files directly into `SpatialPlates`, so `SpatialPlates.toc` is at `.../AddOns/SpatialPlates/SpatialPlates.toc` next to `Config.lua`, `Presets.lua`, `Appearance.lua`, and `Core.lua`. If you extracted the GitHub source archive, rename its `Spatial-Plates` or `Spatial-Plates-main` directory to `SpatialPlates` (do not leave an extra nested folder).
+1. Download the `SpatialPlates-<version>.zip` asset from [GitHub Releases](https://github.com/SeanShaffer88/Spatial-Plates/releases), not the automatically generated **Source code** archive.
+2. Extract the release archive into your active WoW client’s `Interface/AddOns` directory. It already contains an addon folder named **`SpatialPlates`** (no hyphen):
+   - Windows Classic: `World of Warcraft\_classic_\Interface\AddOns\SpatialPlates\SpatialPlates.toc`
+   - Windows Classic Era: `World of Warcraft\_classic_era_\Interface\AddOns\SpatialPlates\SpatialPlates.toc`
+   - macOS: use the matching client folder under `~/Documents/Blizzard Entertainment/World of Warcraft/`, then `Interface/AddOns/SpatialPlates/SpatialPlates.toc`.
+3. Check that `SpatialPlates.toc` is directly inside `SpatialPlates`, next to `Config.lua`, `Presets.lua`, `Appearance.lua`, and `Core.lua`; avoid an extra nested directory. If installing from the GitHub source archive instead, manually copy these files into `AddOns/SpatialPlates/`.
 4. Fully restart the game, select the intended client/version, open **AddOns** on the character-select screen, and enable **Spatial Plates**. If it is listed as out of date, enable **Load out of date AddOns**; `## Interface: 16001` may not match your client.
 5. Type `/splates` in game to see commands, or `/splates config` to open the options panel.
 
@@ -109,14 +109,21 @@ Load order in the TOC is `Config.lua → Presets.lua → Appearance.lua → Core
 
 ## Testing
 
-Run the local mocked suite and static check from the repository root:
+Run the mocked suite, static checks, and package-layout test from the repository root:
 
 ```sh
 lua tests/run.lua
 python3 tests/check_static.py
+python3 tests/test_package.py
 ```
 
-The Lua suite uses a deliberately small fake WoW API; it has no third-party Lua test framework dependency. The static script checks the TOC/load order and scans addon Lua sources for prohibited combat-data/secure-hook API names.
+Build the installable archive (its top-level addon folder is named `SpatialPlates`):
+
+```sh
+python3 scripts/package_release.py
+```
+
+The Lua suite uses a deliberately small fake WoW API; it has no third-party Lua test framework dependency. The static script checks TOC/version/load order and scans addon Lua sources for prohibited combat-data/secure-hook API names. The package test confirms the release ZIP has the exact installable directory layout.
 
 ## In-client testing checklist
 
