@@ -1,6 +1,6 @@
 # Spatial Plates
 
-A lightweight, purely informational World of Warcraft addon (Classic Forever) that adds a small spatial-semantics overlay to **friendly player nameplates** — approximate distance in yards, same-map/map-name indicator, indoors/outdoors, and underwater status — so healers, raid leads, and party members can understand where friendly players are without staring at raid frames.
+A lightweight, purely informational World of Warcraft addon (Classic Forever) that adds a small spatial-semantics overlay to **player nameplates** (friendly and hostile) — approximate distance in yards, same-map/map-name indicator, indoors/outdoors, and underwater status — so healers, raid leads, and party members can understand where friendly players are without staring at raid frames.
 
 > **Informational only.** The addon code does not call health, power, aura, cooldown, damage, healing, threat, or combat-log APIs; it does not automate decisions or hook insecure combat functions. Secret/unreadable spatial values are omitted or the last readable display is frozen in combat. Calls are guarded and the addon is designed to fail closed where possible, but no Lua addon can guarantee zero errors or taint on every client build; use the live-client checklist before release.
 
@@ -11,7 +11,7 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
    - Windows Classic: `World of Warcraft\_classic_\Interface\AddOns\SpatialPlates\SpatialPlates.toc`
    - Windows Classic Era: `World of Warcraft\_classic_era_\Interface\AddOns\SpatialPlates\SpatialPlates.toc`
    - macOS: use the matching client folder under `~/Documents/Blizzard Entertainment/World of Warcraft/`, then `Interface/AddOns/SpatialPlates/SpatialPlates.toc`.
-3. Check that `SpatialPlates.toc` is directly inside `AddOns/SpatialPlates`, next to `Config.lua`, `Presets.lua`, `Appearance.lua`, and `Core.lua`; avoid an extra nested directory.
+3. Check that `SpatialPlates.toc` is directly inside `AddOns/SpatialPlates`, next to `Config.lua`, `Presets.lua`, `Appearance.lua`, `Core.lua`, and `Minimap.lua`; avoid an extra nested directory.
 4. Fully restart the game, select the intended client/version, open **AddOns** on the character-select screen, and enable **Spatial Plates**. If it is listed as out of date, enable **Load out of date AddOns**; `## Interface: 16001` may not match your client.
 5. Type `/splates` in game to see commands, or `/splates config` to open the options panel.
 
@@ -27,7 +27,12 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 
 ## Usage
 
-- Overlays appear **only** on friendly player nameplates (not enemies, not NPCs, not yourself).
+- Overlays appear on player nameplates (never NPCs or yourself). Which players is controlled by three modes on the **minimap button** (left- or right-click it; drag to move it):
+  - **Global** — every other player, friendly or hostile (on by default, so you can test solo against any player).
+  - **Party / raid members**.
+  - **Friends-list friends**.
+  Any checked mode that matches makes a player eligible; with all three off, nothing is shown. The `filter` setting below narrows further.
+- **Distance for players outside your group:** the client only reports exact distance and map for party/raid members, so other players show a coarse range from `CheckInteractDistance`: `<10y`, `<28y`, or `>28y`. Map name, indoors and underwater are not available for them.
 - By default the overlay sits **above** the nameplate and shows `12y | Same map`.
 - Distance appears only when readable **and** you and the unit are on the same map.
 - The location field compares `C_Map.GetBestMapForUnit`: same map displays `Same map`, otherwise it displays the unit's map name. This API is **not subzone-granular**, so the addon does not claim the players share a subzone; the field hides cleanly when map data is unavailable.
@@ -46,7 +51,11 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 | `/splates indoors [on\|off]` | Toggle indoors/outdoors field |
 | `/splates underwater [on\|off]` | Toggle underwater field |
 | `/splates bearing` | Explain that bearing is unavailable on this client |
-| `/splates filter <all\|party\|raid\|guild\|friends>` | Set friendly filter |
+| `/splates filter <all\|party\|raid\|guild\|friends>` | Narrow eligible players further |
+| `/splates global [on\|off]` | Toggle Global mode (all players) |
+| `/splates party [on\|off]` | Toggle Party / raid mode |
+| `/splates friendslist [on\|off]` | Toggle Friends-list mode |
+| `/splates minimap [on\|off]` | Show/hide the minimap button |
 | `/splates theme <name>` | Apply a theme preset |
 | `/splates theme auto` | Re-detect loaded replacement addon and force-apply its matching preset |
 | `/splates config` | Open options panel |
@@ -91,7 +100,7 @@ Enable **Auto-detect nameplate addons** in the options panel to allow read-only 
 - **No combat APIs.** The addon never calls health/power/aura/cooldown/threat APIs and never parses the combat log.
 - **Guarded reads.** Every spatial call (`UnitDistanceSquared`, `C_Map.*`, `UnitIsSubmerged`, etc.) is wrapped in `pcall` + type checks + `issecretvalue` checks (when available). Unreadable values hide the field.
 - **In-combat freeze.** If a value becomes secret/unreadable while in combat, the last known non-secret display is frozen instead of cleared. Nothing is computed on secrets.
-- **Throttled updates.** A ticker (default 0.3s, configurable 0.1–2.0s) refreshes tracked friendly nameplates. Font, backdrop, size, and color are reapplied only after a profile revision; unchanged text and anchor points are also left alone.
+- **Throttled updates.** A ticker (default 0.3s, configurable 0.1–2.0s) refreshes tracked player nameplates. Font, backdrop, size, and color are reapplied only after a profile revision; unchanged text and anchor points are also left alone.
 - **Cleanup.** `NAME_PLATE_UNIT_REMOVED` hides, detaches, and drops the addon's references to the overlay; repeated token reuse is covered by mock tests, with actual client lifecycle still requiring smoke testing.
 - **Debug mode** prints only *why* a field hid (e.g. `distance hidden: different map`), never secret values.
 
@@ -104,8 +113,9 @@ Enable **Auto-detect nameplate addons** in the options panel to allow read-only 
 | `SpatialPlates/Presets.lua` | Theme presets (partial profile tables) |
 | `SpatialPlates/Appearance.lua` | Data-driven appearance application + text formatting |
 | `SpatialPlates/Core.lua` | Nameplate detection, eligibility, field computation, visibility, ticker, cleanup |
+| `SpatialPlates/Minimap.lua` | Minimap button and the player-mode popup |
 
-Load order in `SpatialPlates/SpatialPlates.toc` is `Config.lua → Presets.lua → Appearance.lua → Core.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
+Load order in `SpatialPlates/SpatialPlates.toc` is `Config.lua → Presets.lua → Appearance.lua → Core.lua → Minimap.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
 
 ## Testing
 
@@ -130,7 +140,7 @@ The Lua suite uses a deliberately small fake WoW API; it has no third-party Lua 
 Mocked Lua tests and static checks can verify control flow, but they do not reproduce the WoW client. **A live Classic Forever client smoke test has not been run in this workspace.** Before release, verify the current interface number and run the checks below in the target client, especially friend-list API behavior and repeated nameplate-token reuse.
 
 1. **Loads cleanly:** `/reload` in and out of combat — no Lua errors.
-2. **Friendly only:** overlays appear on friendly players only — not enemies, not NPCs, not yourself.
+2. **Player modes:** with Global on, overlays appear on friendly and hostile players (not NPCs, not yourself) with a coarse `<10y` / `<28y` / `>28y` range; turn Global off from the minimap popup and confirm only party members / friends-list members remain.
 3. **Distance:** appears when readable and same-map; hidden otherwise (e.g. different map, or API unavailable).
 4. **Map location:** shows `Same map` / map name (not subzone-level); hides cleanly when map data is unavailable.
 5. **No combat APIs:** grep the code — no health/power/aura/cooldown/threat/combat-log usage.

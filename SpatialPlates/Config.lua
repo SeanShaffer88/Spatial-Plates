@@ -11,7 +11,7 @@
 -- Namespace table. Global name uses the required "SpatialPlates_" prefix.
 SpatialPlates = SpatialPlates or {}
 local SP = SpatialPlates
-SP._VERSION = "1.0.2"
+SP._VERSION = "1.1.0"
 SP._PROFILE_VERSION = 1
 
 -- ---------------------------------------------------------------------------
@@ -64,6 +64,10 @@ local function DefaultProfile()
     showUnderwater = false,
     showBearing = false,
     filter = "all", -- all | party | raid | guild | friends
+    -- Player modes: any checked mode that matches makes a player eligible.
+    showGlobal = true, -- every other player, friendly or hostile
+    showParty = true, -- party/raid members
+    showFriendsList = true, -- players on your friends list
 
     -- Font
     font = "default", -- builtin value or custom path
@@ -155,6 +159,8 @@ local function DefaultDB()
     -- the profile is the source of truth. Kept here so /reload preserves them.
     enabled = true,
     debug = false,
+    -- Minimap button: angle in degrees around the minimap edge.
+    minimap = { angle = 225, hide = false },
   }
 end
 
@@ -208,6 +214,10 @@ function SP.EnsureDB()
   if type(db.charProfiles) ~= "table" then db.charProfiles = {} end
   if type(db.accountWide) ~= "boolean" then db.accountWide = true end
   if type(db.version) ~= "number" or db.version ~= db.version then db.version = SP._PROFILE_VERSION end
+  if type(db.minimap) ~= "table" then db.minimap = { angle = 225, hide = false } end
+  local angle = db.minimap.angle
+  if type(angle) ~= "number" or angle ~= angle or angle < 0 or angle >= 360 then db.minimap.angle = 225 end
+  if type(db.minimap.hide) ~= "boolean" then db.minimap.hide = false end
   if type(db.autoThemeAddon) ~= "string" or #db.autoThemeAddon > 64
     or not db.autoThemeAddon:match("^[%w_]+$") then
     db.autoThemeAddon = nil
@@ -310,6 +320,7 @@ function SP.ValidateProfile(p)
   Bool("hideInCombat"); Bool("hideOutOfCombat")
   Bool("hideWhenNameplateHidden"); Bool("hideWhenUnitNotVisible")
   Bool("hideBeyondDistance"); Bool("hideInInstances"); Bool("hideInOpenWorld")
+  Bool("showGlobal"); Bool("showParty"); Bool("showFriendsList")
   Bool("clampToScreen"); Bool("autoDetect"); Bool("autoThemeMatch"); Bool("debug")
 
   if not ConfigReadable(p.filter, "string") or not VALID_FILTERS[p.filter] then p.filter = d.filter end
@@ -403,6 +414,10 @@ function SP.SetProfileValue(key, value)
     local ok, err = pcall(SP.ApplyAllAppearances)
     if not ok then SP.DebugPrint("appearance refresh failed") end
   end
+  if SP.ScanNameplates then
+    local ok, err = pcall(SP.ScanNameplates)
+    if not ok then SP.DebugPrint("nameplate rescan failed") end
+  end
   if SP.RefreshAllOverlays then
     local ok, err = pcall(SP.RefreshAllOverlays)
     if not ok then SP.DebugPrint("overlay refresh failed") end
@@ -446,7 +461,8 @@ end
 local EXPORT_KEYS = {
   enabled = "bool", showDistance = "bool", showSubzone = "bool",
   showIndoors = "bool", showUnderwater = "bool", showBearing = "bool",
-  filter = "str", font = "str", customFontPath = "str",
+  filter = "str", font = "str",
+  showGlobal = "bool", showParty = "bool", showFriendsList = "bool", customFontPath = "str",
   fontSize = "num", fontOutline = "str", fontAlpha = "num",
   colorMode = "str", sameSubzoneText = "str",
   bgEnabled = "bool", bgEdgeSize = "num", bgInset = "num",
@@ -552,7 +568,10 @@ function SP.ImportProfile(str)
       incoming[k] = (v == "1")
     elseif expected == "num" then
       local n = tonumber(v)
-      if n == nil then return false, "invalid numeric value" end
+      -- Some C runtimes parse "nan"/"inf"; reject non-finite numbers too.
+      if n == nil or n ~= n or n == math.huge or n == -math.huge then
+        return false, "invalid numeric value"
+      end
       incoming[k] = n
     else
       incoming[k] = UrlUnescape(v)
@@ -625,6 +644,10 @@ local function PrintHelp()
   print("  /splates underwater [on|off] - toggle underwater field")
   print("  Bearing is unavailable: this client has no safe non-secret bearing API")
   print("  /splates filter <all|party|raid|guild|friends>")
+  print("  /splates minimap [on|off]  - show/hide the minimap button")
+  print("  /splates global [on|off]   - show on all players (friendly + hostile)")
+  print("  /splates party [on|off]    - show on party/raid members")
+  print("  /splates friendslist [on|off] - show on friends-list players")
   print("  /splates theme <name>      - apply a theme preset")
   print("  /splates theme auto        - detect and apply the loaded addon match now")
   print("  /splates config            - open options panel")
@@ -671,6 +694,19 @@ local function HandleSlash(msg)
   elseif cmd == "map" or cmd == "subzone" then ToggleField("showSubzone", "map")
   elseif cmd == "indoors" then ToggleField("showIndoors", "indoors")
   elseif cmd == "underwater" then ToggleField("showUnderwater", "underwater")
+  elseif cmd == "minimap" then
+    local db = SP.EnsureDB()
+    local show = ParseOnOff(rest, not db.minimap.hide)
+    if show == nil then
+      print("|cff33ccffSpatial Plates:|r usage: /splates minimap [on|off]")
+    else
+      db.minimap.hide = not show
+      if SP.UpdateMinimapButton then SP.UpdateMinimapButton() end
+      print("|cff33ccffSpatial Plates:|r minimap button " .. (show and "shown" or "hidden"))
+    end
+  elseif cmd == "global" then ToggleField("showGlobal", "global")
+  elseif cmd == "party" then ToggleField("showParty", "party")
+  elseif cmd == "friendslist" then ToggleField("showFriendsList", "friendslist")
   elseif cmd == "bearing" then
     print("|cff33ccffSpatial Plates:|r bearing unavailable: no safe non-secret API on this client")
   elseif cmd == "filter" then
@@ -956,7 +992,7 @@ local function BuildOptionsPanel()
   MakeLabel(content, "Spatial Plates — Options", 12, -12)
   local sub = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   sub:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -30)
-  sub:SetText("Changes apply live to friendly nameplate overlays. Use /splates help for commands.")
+  sub:SetText("Changes apply live to player nameplate overlays. Use /splates help for commands.")
   sub:SetWidth(380)
 
   -- Column 1: toggles

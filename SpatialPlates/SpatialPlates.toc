@@ -1,8 +1,9 @@
 ## Interface: 16001
 ## Title: Spatial Plates
-## Notes: Non-combat spatial overlay for friendly player nameplates (distance, subzone, indoors/outdoors, underwater). Informational only — never reads health, power, auras, cooldowns, damage, healing, or threat. Degrades gracefully when a value is secret/unreadable.
+## Notes: Non-combat spatial overlay for player nameplates (distance, subzone, indoors/outdoors, underwater). Informational only — never reads health, power, auras, cooldowns, damage, healing, or threat. Degrades gracefully when a value is secret/unreadable.
 ## Author: Spatial Plates
-## Version: 1.0.2
+## Version: 1.1.0
+## IconTexture: Interface\Icons\INV_Misc_Spyglass_03
 ## SavedVariables: SpatialPlatesDB
 ## X-Category: Nameplates
 ## X-Website: https://github.com/SeanShaffer88/Spatial-Plates
@@ -16,3 +17,4 @@ Config.lua
 Presets.lua
 Appearance.lua
 Core.lua
+Minimap.lua

@@ -1,5 +1,5 @@
 -- SpatialPlates Core.lua
--- Main overlay engine: nameplate detection, friendly-player eligibility,
+-- Main overlay engine: nameplate detection, player eligibility,
 -- spatial field computation, visibility rules, throttled updates, cleanup.
 --
 -- SECRET-VALUE SAFETY (read this before editing):
@@ -72,7 +72,7 @@ end
 SP.SafeBooleanCall = SafeBooleanCall
 
 -- ---------------------------------------------------------------------------
--- Unit eligibility (friendly players only)
+-- Unit eligibility (players; optionally friendly players only)
 -- ---------------------------------------------------------------------------
 
 local function SafeUnitIsPlayer(unit)
@@ -98,6 +98,45 @@ function SP.IsFriendlyPlayer(unit)
   if SafeIsSelf(unit) then return false end
   if not SafeUnitIsFriend(unit) then return false end
   return true
+end
+
+-- Party / raid membership. UnitInParty / UnitInRaid are the Forever APIs
+-- (UnitInRaid returns a raid index or nil); UnitIsParty / UnitIsRaid are
+-- kept as fallbacks for other builds. Unreadable results fail closed.
+function SP.IsPartyMember(unit)
+  if type(UnitInParty) == "function" then
+    return SafeBooleanCall(UnitInParty, unit) == true
+  elseif type(UnitIsParty) == "function" then
+    return SafeBooleanCall(UnitIsParty, unit) == true
+  end
+  return false
+end
+
+function SP.IsRaidMember(unit)
+  if type(UnitInRaid) == "function" then
+    local index = SafeCall(UnitInRaid, unit)
+    return IsReadable(index, "number")
+  elseif type(UnitIsRaid) == "function" then
+    return SafeBooleanCall(UnitIsRaid, unit) == true
+  end
+  return false
+end
+
+-- Eligibility from the three mode checkboxes; any checked mode that matches
+-- makes the unit eligible:
+--   showGlobal      -> every other player (friendly or hostile)
+--   showParty       -> party/raid members
+--   showFriendsList -> players on the friends list
+-- Self and NPCs are never eligible.
+function SP.IsEligiblePlayer(unit, profile)
+  if not IsReadable(unit, "string") or unit == "" then return false end
+  if not SafeUnitIsPlayer(unit) then return false end
+  if SafeIsSelf(unit) then return false end
+  if not profile then return false end
+  if profile.showGlobal == true then return true end
+  if profile.showParty == true and (SP.IsPartyMember(unit) or SP.IsRaidMember(unit)) then return true end
+  if profile.showFriendsList == true and SP.IsFriendListMember(unit) then return true end
+  return false
 end
 
 -- Apply the user's filter setting. All checks are pcall-guarded.
@@ -139,11 +178,9 @@ function SP.PassesFilter(unit, profile)
   local filter = profile and profile.filter or "all"
   if filter == "all" then return true end
   if filter == "party" then
-    if type(UnitIsParty) == "function" then return SafeBooleanCall(UnitIsParty, unit) == true end
-    return false
+    return SP.IsPartyMember(unit)
   elseif filter == "raid" then
-    if type(UnitIsRaid) == "function" then return SafeBooleanCall(UnitIsRaid, unit) == true end
-    return false
+    return SP.IsRaidMember(unit)
   elseif filter == "guild" then
     if type(UnitIsInMyGuild) == "function" then return SafeBooleanCall(UnitIsInMyGuild, unit) == true end
     return false
@@ -281,19 +318,58 @@ local function GetUnitMapID(unit)
   return nil
 end
 
--- Distance in yards (integer) or nil. Requires UnitDistanceSquared AND a
--- same-map check via C_Map. Never does arithmetic on secret values: the
--- sqrt only runs after IsReadable confirms a plain number.
+-- Coarse range buckets from CheckInteractDistance, which works on any unit
+-- (UnitDistanceSquared and C_Map.GetBestMapForUnit only report the player's
+-- party/raid members). Index 3 = duel range (~10y), index 4 = follow (~28y).
+local COARSE_BUCKETS = {
+  { index = 3, label = "<10", yards = 10 },
+  { index = 4, label = "<28", yards = 28 },
+}
+
+-- Returns (label, upperBoundYards) or nil when the range API is missing,
+-- errors, or returns an unreadable value. Beyond the last bucket returns
+-- (">28", nil): the upper bound is unknown.
+local function ComputeCoarseRange(unit)
+  if type(CheckInteractDistance) ~= "function" then return nil end
+  for _, bucket in ipairs(COARSE_BUCKETS) do
+    local ok, inRange = pcall(CheckInteractDistance, unit, bucket.index)
+    if not ok or not IsReadable(inRange) then return nil end
+    if inRange == true or inRange == 1 then return bucket.label, bucket.yards end
+  end
+  return ">28", nil
+end
+
+local function FormatCoarse(unit, profile, reason)
+  local label, yards = ComputeCoarseRange(unit)
+  if not label then
+    SP.DebugPrint("distance hidden: " .. reason)
+    return nil
+  end
+  local fmt = (profile.formats and profile.formats.distance) or "{d}y"
+  return SP.FormatTemplate(fmt, { d = label }), yards
+end
+
+-- Distance in yards (integer) or nil. Exact distance requires
+-- UnitDistanceSquared AND a same-map check via C_Map (party/raid members);
+-- players those APIs cannot measure (outside the group) fall back to coarse
+-- CheckInteractDistance buckets. Secret or erroring values still hide. Never
+-- does arithmetic on secret values: the sqrt only runs after IsReadable
+-- confirms a plain number.
 local function ComputeDistance(unit, profile)
   if not (profile and profile.showDistance) then return nil end
   if not UnitDistanceSquared then
     SP.DebugPrint("distance hidden: UnitDistanceSquared unavailable")
     return nil
   end
-  local distSq = SafeCall(UnitDistanceSquared, unit)
-  if not IsReadable(distSq, "number") then
+  local okDist, distSq, checked = pcall(UnitDistanceSquared, unit)
+  if not okDist or not IsReadable(distSq, "number") then
     SP.DebugPrint("distance hidden: UnitDistanceSquared secret/unreadable")
     return nil
+  end
+  -- checkedDistance == false means the client could not measure this unit
+  -- (not in the player's group); the returned distance is meaningless.
+  if checked ~= nil and not (IsReadable(checked, "boolean") and checked == true) then
+    return FormatCoarse(unit, profile, "UnitDistanceSquared unchecked")
   end
   if distSq < 0 then
     SP.DebugPrint("distance hidden: negative value")
@@ -303,8 +379,7 @@ local function ComputeDistance(unit, profile)
   local playerMap = GetPlayerMapID()
   local unitMap = GetUnitMapID(unit)
   if playerMap == nil or unitMap == nil then
-    SP.DebugPrint("distance hidden: map data unavailable")
-    return nil
+    return FormatCoarse(unit, profile, "map data unavailable")
   end
   if playerMap ~= unitMap then
     SP.DebugPrint("distance hidden: different map")
@@ -517,9 +592,9 @@ local function UpdateOverlay(unit)
   -- Re-check eligibility and the active filter on every refresh. Filters can
   -- change while these nameplate tokens remain tracked; hide rather than
   -- leaving stale overlays visible. They can show again if the filter changes.
-  if not SP.IsFriendlyPlayer(unit) then
+  if not SP.IsEligiblePlayer(unit, profile) then
     HideOverlay(overlay)
-    SP.DebugPrint("overlay hidden for " .. unit .. ": no longer a friendly player")
+    SP.DebugPrint("overlay hidden for " .. unit .. ": not an eligible player")
     return
   end
   if not SP.PassesFilter(unit, profile) then
@@ -637,10 +712,10 @@ function SP.RefreshAllOverlays()
 end
 
 -- Ensure an overlay exists for `unit` (create or reuse). Returns the overlay
--- or nil when the unit is not an eligible friendly player.
+-- or nil when the unit is not an eligible player.
 local function EnsureOverlay(unit)
   local profile = SP.GetProfile()
-  if not SP.IsFriendlyPlayer(unit) then return nil end
+  if not SP.IsEligiblePlayer(unit, profile) then return nil end
   if not SP.PassesFilter(unit, profile) then
     SP.DebugPrint("overlay skipped for " .. unit .. ": filter=" .. tostring(profile.filter))
     return nil
@@ -697,6 +772,9 @@ local function ScanNameplates()
     end
   end
 end
+-- Exposed so profile changes (e.g. a player mode turned on) can create
+-- overlays for plates that were skipped as ineligible when they appeared.
+SP.ScanNameplates = ScanNameplates
 
 -- ---------------------------------------------------------------------------
 -- Update loop (throttled ticker with OnUpdate fallback)

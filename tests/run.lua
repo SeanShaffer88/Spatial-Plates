@@ -83,6 +83,15 @@ local function newFrame(name, parent)
   function frame:SetValueStep() end
   function frame:SetObeyMessyMinMax() end
   function frame:SetValue(value) self._value = value end
+  function frame:SetTexture(value) self._texture = value end
+  function frame:SetColorTexture(...) end
+  function frame:SetTexCoord(...) end
+  function frame:SetAllPoints() end
+  function frame:EnableMouse() end
+  function frame:RegisterForDrag() end
+  function frame:SetHighlightTexture() end
+  function frame:GetCenter() return 100, 100 end
+  function frame:GetEffectiveScale() return 1 end
   function frame:CreateFontString()
     local text = { _text = "", _fontCalls = 0, _pointCalls = 0 }
     function text:SetPoint(...) self._pointCalls = self._pointCalls + 1 end
@@ -133,6 +142,15 @@ end
 function UnitIsIndoors(unit) local d = units[unit]; return d and d.indoors end
 function UnitIsSubmerged(unit) local d = units[unit]; return d and d.submerged end
 function InCombatLockdown() return combatState end
+local interactRange = {} -- [unit] = yards for CheckInteractDistance mock
+-- Installed only by the tests that exercise the coarse-range fallback.
+local function MockCheckInteractDistance(unit, index)
+  local yards = interactRange[unit]
+  if yards == nil then return false end
+  if index == 3 then return yards <= 10 end
+  if index == 4 then return yards <= 28 end
+  return false
+end
 function IsInInstance() return instanceState, instanceState and "party" or "none" end
 
 C_Map = {
@@ -178,6 +196,10 @@ dofile("SpatialPlates/Config.lua")
 dofile("SpatialPlates/Presets.lua")
 dofile("SpatialPlates/Appearance.lua")
 dofile("SpatialPlates/Core.lua")
+Minimap = newFrame("Minimap", UIParent)
+UISpecialFrames = {}
+function GetCursorPosition() return 150, 100 end
+dofile("SpatialPlates/Minimap.lua")
 local SP = SpatialPlates
 
 local function resetProfile()
@@ -635,6 +657,83 @@ test("UI1 options panel and missing color-picker APIs fail gracefully", function
   expect(colorButton and colorButton._scripts.OnClick)
   ColorPickerFrame = nil
   expect(pcall(colorButton._scripts.OnClick, colorButton))
+end)
+
+test("MODE1 global/party/friends-list checkboxes control eligibility", function()
+  resetProfile()
+  local p = SP.GetProfile()
+  expect(SP.IsEligiblePlayer("enemy", p), "global mode includes hostile players")
+  expect(SP.IsEligiblePlayer("friend", p))
+  expect(not SP.IsEligiblePlayer("npc", p), "NPCs never eligible")
+  expect(not SP.IsEligiblePlayer("player", p), "self never eligible")
+  p.showGlobal = false
+  expect(SP.IsEligiblePlayer("friend", p), "party mode includes party member")
+  expect(not SP.IsEligiblePlayer("enemy", p))
+  p.showParty = false
+  expect(not SP.IsEligiblePlayer("friend", p), "friend not on friends list")
+  friendNames["Alice-Azeroth"] = true
+  expect(SP.IsEligiblePlayer("friend", p), "friends-list mode")
+  p.showFriendsList = false
+  expect(not SP.IsEligiblePlayer("friend", p), "all modes off hides everyone")
+  friendNames["Alice-Azeroth"] = nil
+end)
+
+test("MODE2 turning global mode on creates overlays for already-visible hostile plates", function()
+  resetProfile(); clearOverlays()
+  SP.SetProfileValue("showGlobal", false)
+  currentPlate = CreateFrame("Frame", "PlateMODE2", UIParent); currentPlate.unit = "enemy"
+  fire("NAME_PLATE_UNIT_ADDED", "enemy")
+  expect(SP._overlays.enemy == nil, "enemy skipped while global off")
+  SP.SetProfileValue("showGlobal", true)
+  expect(SP._overlays.enemy and SP._overlays.enemy:IsShown(), "enemy overlay appears after enabling global")
+  clearOverlays()
+end)
+
+test("DIST3 players outside the group fall back to coarse interact-range buckets", function()
+  resetProfile(); clearOverlays()
+  setUnit("stranger", { isPlayer = true, friendly = false, enemy = true, visible = true, distanceSq = 0 })
+  mapByUnit.stranger = nil -- GetBestMapForUnit only covers party members
+  currentPlate = CreateFrame("Frame", "PlateDIST3", UIParent); currentPlate.unit = "stranger"
+  interactRange.stranger = 8
+  CheckInteractDistance = MockCheckInteractDistance
+  fire("NAME_PLATE_UNIT_ADDED", "stranger")
+  local overlay = SP._overlays.stranger
+  expect(overlay and overlay:IsShown())
+  expect(overlay._spText:GetText():find("<10y", 1, true), "near bucket: " .. tostring(overlay._spText:GetText()))
+  interactRange.stranger = 20; SP.RefreshAllOverlays()
+  expect(overlay._spText:GetText():find("<28y", 1, true))
+  interactRange.stranger = 40; SP.RefreshAllOverlays()
+  expect(overlay._spText:GetText():find(">28y", 1, true))
+  clearOverlays(); interactRange.stranger = nil; CheckInteractDistance = nil
+end)
+
+test("MM1 minimap button opens mode popup on left or right click and toggles modes", function()
+  resetProfile()
+  local loaderEvent
+  for _, f in ipairs(frames) do
+    if f._events and f._events.PLAYER_LOGIN then loaderEvent = f._scripts.OnEvent end
+  end
+  expect(loaderEvent, "PLAYER_LOGIN loader registered")
+  loaderEvent()
+  local button = namedFrames.SpatialPlates_MinimapButton
+  expect(button and button:IsShown(), "minimap button shown")
+  button._scripts.OnMouseUp(button, "RightButton")
+  local menu = namedFrames.SpatialPlates_ModeMenu
+  expect(menu and menu:IsShown(), "right-click opens popup")
+  button._scripts.OnMouseUp(button, "LeftButton")
+  expect(not menu:IsShown(), "left-click closes popup")
+  button._scripts.OnMouseUp(button, "LeftButton")
+  expect(menu:IsShown(), "left-click opens popup")
+  local globalCheck
+  for _, c in ipairs(menu._spChecks) do if c._spKey == "showGlobal" then globalCheck = c end end
+  expect(globalCheck:GetChecked() == true)
+  globalCheck:SetChecked(false); globalCheck._scripts.OnClick(globalCheck)
+  equal(SP.GetProfile().showGlobal, false)
+  SlashCmdList.SPATIALPLATES("minimap off")
+  expect(not button:IsShown(), "slash hides button")
+  equal(SpatialPlatesDB.minimap.hide, true)
+  SlashCmdList.SPATIALPLATES("minimap on")
+  expect(button:IsShown())
 end)
 
 if failed > 0 then
