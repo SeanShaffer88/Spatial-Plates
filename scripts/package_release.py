@@ -19,6 +19,7 @@ ADDON_FILES = (
     "Range.lua",
     "Core.lua",
     "Minimap.lua",
+    "Media/Icon.tga",
 )
 PACKAGE_FILES = ADDON_FILES + ("LICENSE",)
 

@@ -56,4 +56,9 @@ for token in ("issecretvalue", "UnitDistanceSquared", "C_Map.GetBestMapForUnit",
         print("FAIL missing defensive mechanism:", token)
         sys.exit(1)
 
+icon_line = re.search(r"^## IconTexture: Interface\\AddOns\\SpatialPlates\\(.+)$", required_toc, re.MULTILINE)
+if not icon_line or not (ADDON_DIR / (icon_line.group(1).strip().replace("\\", "/") + ".tga")).is_file():
+    print("FAIL TOC IconTexture must point at a .tga shipped in the addon folder")
+    sys.exit(1)
+
 print("PASS static safety scan: no forbidden API/hook tokens; TOC and key guards present")
