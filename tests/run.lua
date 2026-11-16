@@ -92,19 +92,24 @@ local function newFrame(name, parent)
   function frame:SetHighlightTexture() end
   function frame:GetCenter() return 100, 100 end
   function frame:GetEffectiveScale() return 1 end
+  function frame:StartMoving() end
+  function frame:StopMovingOrSizing() end
+  function frame:SetVertexColor(...) end
   function frame:CreateFontString()
     local text = { _text = "", _fontCalls = 0, _pointCalls = 0 }
     function text:SetPoint(...) self._pointCalls = self._pointCalls + 1 end
     function text:ClearAllPoints() end
     function text:SetText(value) self._text = value end
     function text:GetText() return self._text end
-    function text:SetTextColor(...) end
     function text:SetJustifyH() end
     function text:SetJustifyV() end
     function text:GetFont() return "Fonts\\FRIZQT__.TTF", 12, "" end
     function text:SetFont(...) self._fontCalls = self._fontCalls + 1 end
     function text:SetWidth() end
     function text:SetHeight() end
+    function text:Show() self._shown = true end
+    function text:Hide() self._shown = false end
+    function text:SetTextColor(...) self._color = { ... } end
     return text
   end
   function frame:CreateTexture() return newFrame(nil, self) end
@@ -730,7 +735,18 @@ test("DIST3 players outside the group fall back to coarse interact-range buckets
   clearOverlays(); interactRange.stranger = nil; CheckInteractDistance = nil
 end)
 
-test("MM1 minimap button opens mode popup on left or right click and toggles modes", function()
+local function FindControl(window, key)
+  for _, c in ipairs(window._spControls) do
+    if c._spKey == key then return c end
+  end
+end
+local function FindRadio(window, predicateLabel)
+  for _, c in ipairs(window._spControls) do
+    if c._spChoice and c._spChoice[1] == predicateLabel then return c end
+  end
+end
+
+test("MM1 minimap button toggles the settings window on left or right click", function()
   resetProfile()
   local loaderEvent
   for _, f in ipairs(frames) do
@@ -741,22 +757,128 @@ test("MM1 minimap button opens mode popup on left or right click and toggles mod
   local button = namedFrames.SpatialPlates_MinimapButton
   expect(button and button:IsShown(), "minimap button shown")
   button._scripts.OnMouseUp(button, "RightButton")
-  local menu = namedFrames.SpatialPlates_ModeMenu
-  expect(menu and menu:IsShown(), "right-click opens popup")
+  local window = namedFrames.SpatialPlates_SettingsWindow
+  expect(window and window:IsShown(), "right-click opens the window")
   button._scripts.OnMouseUp(button, "LeftButton")
-  expect(not menu:IsShown(), "left-click closes popup")
+  expect(not window:IsShown(), "left-click closes it")
   button._scripts.OnMouseUp(button, "LeftButton")
-  expect(menu:IsShown(), "left-click opens popup")
-  local globalCheck
-  for _, c in ipairs(menu._spChecks) do if c._spKey == "showGlobal" then globalCheck = c end end
-  expect(globalCheck:GetChecked() == true)
-  globalCheck:SetChecked(false); globalCheck._scripts.OnClick(globalCheck)
-  equal(SP.GetProfile().showGlobal, false)
+  expect(window:IsShown(), "left-click opens it")
+  local found = false
+  for _, name in ipairs(UISpecialFrames) do if name == "SpatialPlates_SettingsWindow" then found = true end end
+  expect(found, "Escape closes the window")
   SlashCmdList.SPATIALPLATES("minimap off")
   expect(not button:IsShown(), "slash hides button")
   equal(SpatialPlatesDB.minimap.hide, true)
   SlashCmdList.SPATIALPLATES("minimap on")
   expect(button:IsShown())
+  window:Hide()
+end)
+
+test("SW1 settings window controls edit the profile and reflect it", function()
+  resetProfile()
+  SlashCmdList.SPATIALPLATES("settings")
+  local window = namedFrames.SpatialPlates_SettingsWindow
+  expect(window:IsShown(), "/splates settings opens the window")
+  local p = SP.GetProfile()
+
+  local enemyNpcs = FindControl(window, "showEnemyNPCs")
+  expect(enemyNpcs:GetChecked() == true, "checkbox reflects profile")
+  enemyNpcs:SetChecked(false); enemyNpcs._scripts.OnClick(enemyNpcs)
+  equal(p.showEnemyNPCs, false)
+
+  local size = FindControl(window, "fontSize")
+  size._scripts.OnValueChanged(size, 17.4)
+  equal(p.fontSize, 17, "size slider rounds to its step")
+  local scale = FindControl(window, "scale")
+  scale._scripts.OnValueChanged(scale, 1.2600001)
+  equal(p.scale, 1.25)
+  local offY = FindControl(window, "offsetY")
+  offY._scripts.OnValueChanged(offY, -12)
+  equal(p.offsetY, -12)
+
+  local below = FindRadio(window, "Below nameplate")
+  below._scripts.OnClick(below)
+  equal(p.anchor, "BOTTOM"); equal(p.anchorTo, "TOP")
+  local above = FindRadio(window, "Above nameplate")
+  expect(above:GetChecked() == false, "radio siblings refresh")
+  above._scripts.OnClick(above)
+  equal(p.anchor, "TOP"); equal(p.anchorTo, "BOTTOM")
+
+  local custom = FindRadio(window, "Custom")
+  custom._scripts.OnClick(custom)
+  equal(p.colorMode, "custom")
+  local thick = FindRadio(window, "Thick")
+  thick._scripts.OnClick(thick)
+  equal(p.fontOutline, "thick")
+
+  -- Modern color picker: swatch opens it, swatchFunc stores the color.
+  local captured
+  ColorPickerFrame = {
+    SetupColorPickerAndShow = function(self, info) captured = info end,
+    GetColorRGB = function() return 0.1, 0.2, 0.3 end,
+    GetColorAlpha = function() return 0.5 end,
+  }
+  local swatch = FindControl(window, "fontColor")
+  swatch._scripts.OnClick(swatch)
+  expect(captured and captured.swatchFunc, "modern picker used")
+  captured.swatchFunc()
+  equal(p.fontColor.r, 0.1); equal(p.fontColor.b, 0.3); equal(p.fontColor.a, 0.5)
+  captured.cancelFunc()
+  equal(p.fontColor.r, 1, "cancel restores")
+  ColorPickerFrame = nil
+
+  -- Reset restores defaults and the controls follow.
+  window._spReset._scripts.OnClick(window._spReset)
+  equal(SP.GetProfile().colorMode, "name")
+  expect(FindControl(window, "showEnemyNPCs"):GetChecked() == true)
+  window:Hide()
+end)
+
+test("STYLE2 text uses the nameplate name color and a distance-colored outline", function()
+  resetProfile(); clearOverlays()
+  local p = SP.GetProfile()
+  equal(p.colorMode, "name"); equal(p.distanceOutline, true)
+  currentPlate = CreateFrame("Frame", "PlateSTYLE2", UIParent); currentPlate.unit = "friend"
+  local nameFS = currentPlate:CreateFontString()
+  function nameFS:GetTextColor() return 0.25, 0.5, 1.0, 1 end
+  currentPlate.UnitFrame = { name = nameFS }
+  fire("NAME_PLATE_UNIT_ADDED", "friend")
+  local overlay = SP._overlays.friend
+  expect(overlay and overlay:IsShown())
+  local c = overlay._spText._color
+  equal(c[1], 0.25); equal(c[3], 1.0)
+  expect(overlay._spOutline and #overlay._spOutline == 8, "eight outline copies")
+  local copy = overlay._spOutline[1]
+  equal(copy:GetText(), overlay._spText:GetText(), "outline copies share the text")
+  -- friend is at 12 yards: second band (<= 20).
+  local band = SP.DISTANCE_BANDS[2]
+  equal(copy._color[1], band.r); equal(copy._color[2], band.g)
+  units.friend.distanceSq = 2500; SP.RefreshAllOverlays() -- 50y
+  equal(copy._color[1], SP.DISTANCE_FAR.r); equal(copy._color[2], SP.DISTANCE_FAR.g)
+  -- Name color follows the plate when it changes (target, tapped...).
+  function nameFS:GetTextColor() return 0.5, 0.5, 0.5, 1 end
+  SP.RefreshAllOverlays()
+  equal(overlay._spText._color[1], 0.5)
+  -- Turning the outline off hides the copies.
+  SP.SetProfileValue("distanceOutline", false); SP.RefreshAllOverlays()
+  expect(copy._shown == false, "copies hidden")
+  units.friend.distanceSq = 144
+  clearOverlays()
+end)
+
+test("COLOR2 untouched reaction/white profiles move to name colors once", function()
+  SpatialPlatesDB = {
+    reactionColorMigrated = true,
+    profile = { colorMode = "reaction", fontColor = { r = 1, g = 1, b = 1, a = 1 } },
+    charProfiles = { ["A-B"] = { colorMode = "class", fontColor = { r = 1, g = 1, b = 1, a = 1 } } },
+  }
+  SP.EnsureDB()
+  equal(SpatialPlatesDB.profile.colorMode, "name")
+  equal(SpatialPlatesDB.charProfiles["A-B"].colorMode, "class", "deliberate choice kept")
+  SpatialPlatesDB.profile.colorMode = "reaction"
+  SP.EnsureDB()
+  equal(SpatialPlatesDB.profile.colorMode, "reaction", "runs once")
+  resetProfile()
 end)
 
 -- Spellbook / spell-range mocks for the finer range steps.
@@ -917,13 +1039,13 @@ end)
 
 test("COLOR1 reaction colors are the default and untouched old profiles migrate once", function()
   SpatialPlatesDB = nil
-  equal(SP.GetProfile().colorMode, "reaction")
+  equal(SP.GetProfile().colorMode, "name")
   SpatialPlatesDB = {
     profile = { colorMode = "custom", fontColor = { r = 1, g = 1, b = 1, a = 1 } },
     charProfiles = { ["A-B"] = { colorMode = "custom", fontColor = { r = 1, g = 0, b = 0, a = 1 } } },
   }
   SP.EnsureDB()
-  equal(SpatialPlatesDB.profile.colorMode, "reaction", "default white custom migrates")
+  equal(SpatialPlatesDB.profile.colorMode, "name", "default white custom migrates")
   equal(SpatialPlatesDB.charProfiles["A-B"].colorMode, "custom", "customized color kept")
   SpatialPlatesDB.profile.colorMode = "custom"
   SP.EnsureDB()

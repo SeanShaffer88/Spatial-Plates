@@ -81,6 +81,54 @@ function SP.GetReactionColor(unit)
   return { r = 1.0, g = 0.9, b = 0.4, a = 1 }
 end
 
+-- Name color: the color the nameplate itself uses for the unit's name.
+-- First the plate's own name FontString (Blizzard plates keep it at
+-- plate.UnitFrame.name), then UnitSelectionColor (the reaction color the
+-- game uses for names). Returns nil when neither is readable.
+function SP.GetNameColor(unit)
+  if not unit then return nil end
+  local function Readable3(r, g, b)
+    return SP.IsReadable(r, "number") and SP.IsReadable(g, "number") and SP.IsReadable(b, "number")
+  end
+  if C_NamePlate and type(C_NamePlate.GetNamePlateForUnit) == "function" then
+    local okPlate, plate = pcall(C_NamePlate.GetNamePlateForUnit, unit)
+    if okPlate and plate then
+      local ok, r, g, b = pcall(function()
+        local unitFrame = plate.UnitFrame
+        local name = unitFrame and unitFrame.name
+        if name and name.GetTextColor then return name:GetTextColor() end
+      end)
+      if ok and Readable3(r, g, b) then return { r = r, g = g, b = b, a = 1 } end
+    end
+  end
+  if type(UnitSelectionColor) == "function" then
+    local ok, r, g, b = pcall(UnitSelectionColor, unit)
+    if ok and Readable3(r, g, b) then return { r = r, g = g, b = b, a = 1 } end
+  end
+  return nil
+end
+
+-- Distance bands for the colored outline, by yards (exact distance or the
+-- estimate's upper bound): green close, then yellow-green, yellow, orange,
+-- and red beyond 40 yards or when only "beyond N" is known.
+SP.DISTANCE_BANDS = {
+  { yards = 10, r = 0.2, g = 1.0, b = 0.2 },
+  { yards = 20, r = 0.75, g = 1.0, b = 0.2 },
+  { yards = 30, r = 1.0, g = 0.9, b = 0.2 },
+  { yards = 40, r = 1.0, g = 0.55, b = 0.1 },
+}
+SP.DISTANCE_FAR = { r = 1.0, g = 0.2, b = 0.2 }
+
+-- Outline color for a distance, or nil when no distance is shown.
+function SP.GetDistanceColor(yards, hasDistance)
+  if not hasDistance then return nil end
+  if type(yards) ~= "number" then return SP.DISTANCE_FAR end
+  for _, band in ipairs(SP.DISTANCE_BANDS) do
+    if yards <= band.yards then return band end
+  end
+  return SP.DISTANCE_FAR
+end
+
 -- Resolve the text color for an overlay. `field` selects per-field colors
 -- when colorMode == "perField"; otherwise the mode decides.
 -- `unit` may be nil (preview frame) — class/reaction modes fall back to custom.
@@ -99,6 +147,9 @@ function SP.ResolveTextColor(profile, field, unit)
     local c = SP.GetReactionColor(unit)
     c.a = c.a * (profile.fontAlpha or 1)
     return c
+  elseif mode == "name" and unit then
+    local c = SP.GetNameColor(unit) or SP.GetReactionColor(unit)
+    return { r = c.r, g = c.g, b = c.b, a = (c.a or 1) * (profile.fontAlpha or 1) }
   end
   local c = profile.fontColor or { r = 1, g = 1, b = 1, a = 1 }
   return { r = c.r or 1, g = c.g or 1, b = c.b or 1, a = (c.a or 1) * (profile.fontAlpha or 1) }
@@ -232,6 +283,78 @@ end
 -- Frame appearance application
 -- ---------------------------------------------------------------------------
 
+-- Distance outline: eight copies of the text, offset by the outline
+-- thickness in every direction and drawn behind it in the distance color.
+-- Plain font outlines are always black, so this is how a colored outline is
+-- drawn.
+local OUTLINE_OFFSETS = {
+  { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 },
+  { -1, -1 }, { -1, 1 }, { 1, -1 }, { 1, 1 },
+}
+
+local function StripColorCodes(s)
+  s = tostring(s or "")
+  s = s:gsub("||", "\001")
+  s = s:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+  return (s:gsub("\001", "||"))
+end
+
+local function EnsureOutline(overlay)
+  if overlay._spOutline then return overlay._spOutline end
+  local copies = {}
+  for i = 1, #OUTLINE_OFFSETS do
+    copies[i] = overlay:CreateFontString(nil, "ARTWORK")
+  end
+  overlay._spOutline = copies
+  return copies
+end
+
+local function HideOutline(overlay)
+  for _, fs in ipairs(overlay._spOutline or {}) do
+    if fs.Hide then pcall(fs.Hide, fs) end
+  end
+end
+
+-- Set the overlay's text (and its outline copies).
+function SP.SetOverlayText(overlay, value)
+  if not overlay or not overlay._spText then return end
+  overlay._spText:SetText(value)
+  local plain
+  for _, fs in ipairs(overlay._spOutline or {}) do
+    plain = plain or StripColorCodes(value)
+    pcall(fs.SetText, fs, plain)
+  end
+end
+
+-- Per-refresh colors that change without a profile change: the name color
+-- (target/tapped changes) and the distance outline. Each is reapplied only
+-- when the color actually changes.
+function SP.UpdateDynamicStyle(overlay, unit, yards, hasDistance)
+  if not overlay or not overlay._spText then return end
+  local profile = SP.GetProfile()
+  if profile.colorMode == "name" then
+    local c = SP.ResolveTextColor(profile, nil, unit)
+    local key = string.format("%.3f,%.3f,%.3f,%.3f", c.r, c.g, c.b, c.a)
+    if overlay._spTextColorKey ~= key then
+      pcall(overlay._spText.SetTextColor, overlay._spText, c.r, c.g, c.b, c.a)
+      overlay._spTextColorKey = key
+    end
+  end
+  if profile.distanceOutline and overlay._spOutline then
+    local c = SP.GetDistanceColor(yards, hasDistance)
+    local alpha = profile.fontAlpha or 1
+    local r, g, b = 0, 0, 0
+    if c then r, g, b = c.r, c.g, c.b end
+    local key = string.format("%.2f,%.2f,%.2f,%.2f", r, g, b, alpha)
+    if overlay._spOutlineColorKey ~= key then
+      for _, fs in ipairs(overlay._spOutline) do
+        pcall(fs.SetTextColor, fs, r, g, b, alpha)
+      end
+      overlay._spOutlineColorKey = key
+    end
+  end
+end
+
 local FALLBACK_TEXTURE = "Interface\\Buttons\\WHITE8x8"
 
 local function SafeTexture(path)
@@ -297,7 +420,9 @@ function SP.ApplyAppearanceToFrame(overlay, text, unit)
     if text then
       local path = SP.ResolveFontPath(profile)
       local size = profile.fontSize or 11
-      local flag = OutlineFlag(profile)
+      local useOutline = profile.distanceOutline == true
+      -- The colored outline replaces the client's black outline.
+      local flag = useOutline and "" or OutlineFlag(profile)
       if path then
         local fontOk = pcall(text.SetFont, text, path, size, flag)
         if not fontOk then
@@ -314,6 +439,7 @@ function SP.ApplyAppearanceToFrame(overlay, text, unit)
       end
       local c = SP.ResolveTextColor(profile, nil, unit)
       text:SetTextColor(c.r, c.g, c.b, c.a)
+      overlay._spTextColorKey = nil
       -- Padding: inset the text within the frame.
       local pad = profile.padding or 2
       text:ClearAllPoints()
@@ -323,6 +449,27 @@ function SP.ApplyAppearanceToFrame(overlay, text, unit)
       text:SetPoint("BOTTOM", overlay, "BOTTOM", 0, 0)
       text:SetJustifyH("CENTER")
       text:SetJustifyV("MIDDLE")
+
+      if useOutline then
+        local copies = EnsureOutline(overlay)
+        local fontPath = text:GetFont()
+        local thickness = (profile.fontOutline == "thick") and 2 or 1
+        local current = StripColorCodes(text:GetText() or "")
+        for i, fs in ipairs(copies) do
+          local off = OUTLINE_OFFSETS[i]
+          pcall(fs.SetFont, fs, fontPath or "Fonts\\FRIZQT__.TTF", size, "")
+          fs:ClearAllPoints()
+          fs:SetPoint("TOPLEFT", text, "TOPLEFT", off[1] * thickness, off[2] * thickness)
+          fs:SetPoint("BOTTOMRIGHT", text, "BOTTOMRIGHT", off[1] * thickness, off[2] * thickness)
+          fs:SetJustifyH("CENTER")
+          fs:SetJustifyV("MIDDLE")
+          fs:SetText(current)
+          if fs.Show then fs:Show() end
+        end
+        overlay._spOutlineColorKey = nil
+      else
+        HideOutline(overlay)
+      end
     end
   end)
   if not ok then

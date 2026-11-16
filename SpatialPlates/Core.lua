@@ -755,9 +755,10 @@ local function UpdateOverlay(unit)
     end
   end
   if overlay._spLastText ~= combined then
-    overlay._spText:SetText(combined)
+    SP.SetOverlayText(overlay, combined)
     overlay._spLastText = combined
   end
+  pcall(SP.UpdateDynamicStyle, overlay, unit, distYards, distText ~= nil)
   overlay:Show()
 end
 
