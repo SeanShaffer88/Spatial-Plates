@@ -11,7 +11,7 @@
 -- Namespace table. Global name uses the required "SpatialPlates_" prefix.
 SpatialPlates = SpatialPlates or {}
 local SP = SpatialPlates
-SP._VERSION = "1.1.0"
+SP._VERSION = "1.2.0"
 SP._PROFILE_VERSION = 1
 
 -- ---------------------------------------------------------------------------
@@ -65,9 +65,11 @@ local function DefaultProfile()
     showBearing = false,
     filter = "all", -- all | party | raid | guild | friends
     -- Player modes: any checked mode that matches makes a player eligible.
-    showGlobal = true, -- every other player, friendly or hostile
+    showGlobal = true, -- all friendly players
     showParty = true, -- party/raid members
     showFriendsList = true, -- players on your friends list
+    showEnemyPlayers = true, -- non-friendly players (opposite faction / PvP)
+    showEnemyNPCs = true, -- attackable NPCs (hostile and neutral mobs)
 
     -- Font
     font = "default", -- builtin value or custom path
@@ -321,6 +323,7 @@ function SP.ValidateProfile(p)
   Bool("hideWhenNameplateHidden"); Bool("hideWhenUnitNotVisible")
   Bool("hideBeyondDistance"); Bool("hideInInstances"); Bool("hideInOpenWorld")
   Bool("showGlobal"); Bool("showParty"); Bool("showFriendsList")
+  Bool("showEnemyPlayers"); Bool("showEnemyNPCs")
   Bool("clampToScreen"); Bool("autoDetect"); Bool("autoThemeMatch"); Bool("debug")
 
   if not ConfigReadable(p.filter, "string") or not VALID_FILTERS[p.filter] then p.filter = d.filter end
@@ -462,7 +465,8 @@ local EXPORT_KEYS = {
   enabled = "bool", showDistance = "bool", showSubzone = "bool",
   showIndoors = "bool", showUnderwater = "bool", showBearing = "bool",
   filter = "str", font = "str",
-  showGlobal = "bool", showParty = "bool", showFriendsList = "bool", customFontPath = "str",
+  showGlobal = "bool", showParty = "bool", showFriendsList = "bool",
+  showEnemyPlayers = "bool", showEnemyNPCs = "bool", customFontPath = "str",
   fontSize = "num", fontOutline = "str", fontAlpha = "num",
   colorMode = "str", sameSubzoneText = "str",
   bgEnabled = "bool", bgEdgeSize = "num", bgInset = "num",
@@ -645,9 +649,11 @@ local function PrintHelp()
   print("  Bearing is unavailable: this client has no safe non-secret bearing API")
   print("  /splates filter <all|party|raid|guild|friends>")
   print("  /splates minimap [on|off]  - show/hide the minimap button")
-  print("  /splates global [on|off]   - show on all players (friendly + hostile)")
+  print("  /splates global [on|off]   - show on all friendly players")
   print("  /splates party [on|off]    - show on party/raid members")
   print("  /splates friendslist [on|off] - show on friends-list players")
+  print("  /splates enemyplayers [on|off] - show on enemy players")
+  print("  /splates enemynpcs [on|off] - show on attackable NPCs")
   print("  /splates theme <name>      - apply a theme preset")
   print("  /splates theme auto        - detect and apply the loaded addon match now")
   print("  /splates config            - open options panel")
@@ -707,6 +713,8 @@ local function HandleSlash(msg)
   elseif cmd == "global" then ToggleField("showGlobal", "global")
   elseif cmd == "party" then ToggleField("showParty", "party")
   elseif cmd == "friendslist" then ToggleField("showFriendsList", "friendslist")
+  elseif cmd == "enemyplayers" then ToggleField("showEnemyPlayers", "enemyplayers")
+  elseif cmd == "enemynpcs" then ToggleField("showEnemyNPCs", "enemynpcs")
   elseif cmd == "bearing" then
     print("|cff33ccffSpatial Plates:|r bearing unavailable: no safe non-secret API on this client")
   elseif cmd == "filter" then
@@ -992,7 +1000,7 @@ local function BuildOptionsPanel()
   MakeLabel(content, "Spatial Plates — Options", 12, -12)
   local sub = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   sub:SetPoint("TOPLEFT", content, "TOPLEFT", 12, -30)
-  sub:SetText("Changes apply live to player nameplate overlays. Use /splates help for commands.")
+  sub:SetText("Changes apply live to nameplate overlays. Use /splates help for commands.")
   sub:SetWidth(380)
 
   -- Column 1: toggles

@@ -67,7 +67,7 @@ function SP.GetClassColor(unit)
 end
 
 -- Reaction color: green for friends, yellow for neutral, red for enemies.
--- Only friendly players are ever shown, but the helper is total.
+-- Friendly and enemy units can both be shown; the helper is total.
 function SP.GetReactionColor(unit)
   if not unit then return { r = 1, g = 1, b = 1, a = 1 } end
   local okFriend, isFriend = pcall(UnitIsFriend, "player", unit)

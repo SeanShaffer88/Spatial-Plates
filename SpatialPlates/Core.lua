@@ -122,22 +122,38 @@ function SP.IsRaidMember(unit)
   return false
 end
 
--- Eligibility from the three mode checkboxes; any checked mode that matches
--- makes the unit eligible:
---   showGlobal      -> every other player (friendly or hostile)
---   showParty       -> party/raid members
---   showFriendsList -> players on the friends list
--- Self and NPCs are never eligible.
-function SP.IsEligiblePlayer(unit, profile)
-  if not IsReadable(unit, "string") or unit == "" then return false end
-  if not SafeUnitIsPlayer(unit) then return false end
-  if SafeIsSelf(unit) then return false end
-  if not profile then return false end
-  if profile.showGlobal == true then return true end
-  if profile.showParty == true and (SP.IsPartyMember(unit) or SP.IsRaidMember(unit)) then return true end
-  if profile.showFriendsList == true and SP.IsFriendListMember(unit) then return true end
-  return false
+local function SafeUnitCanAttack(unit)
+  if type(UnitCanAttack) ~= "function" then return false end
+  return SafeBooleanCall(UnitCanAttack, "player", unit) == true
 end
+
+-- Eligibility from the mode checkboxes; any checked mode that matches makes
+-- the unit eligible. Yourself is never eligible.
+--   Friendly players (UnitIsFriend):
+--     showGlobal      -> all friendly players
+--     showParty       -> party/raid members
+--     showFriendsList -> players on the friends list
+--   showEnemyPlayers  -> players who are not friendly (opposite faction,
+--                        duel/PvP targets)
+--   showEnemyNPCs     -> non-player units you can attack (hostile and
+--                        neutral mobs, enemy pets); friendly NPCs never show
+function SP.IsEligibleUnit(unit, profile)
+  if not IsReadable(unit, "string") or unit == "" then return false end
+  if not profile then return false end
+  if SafeIsSelf(unit) then return false end
+  local isFriend = SafeUnitIsFriend(unit)
+  if SafeUnitIsPlayer(unit) then
+    if not isFriend then return profile.showEnemyPlayers == true end
+    if profile.showGlobal == true then return true end
+    if profile.showParty == true and (SP.IsPartyMember(unit) or SP.IsRaidMember(unit)) then return true end
+    if profile.showFriendsList == true and SP.IsFriendListMember(unit) then return true end
+    return false
+  end
+  if isFriend then return false end
+  return profile.showEnemyNPCs == true and SafeUnitCanAttack(unit)
+end
+-- Backward-compatible name.
+SP.IsEligiblePlayer = SP.IsEligibleUnit
 
 -- Apply the user's filter setting. All checks are pcall-guarded.
 -- True only when the unit is on the player's actual friends list. Friendly
@@ -177,6 +193,9 @@ end
 function SP.PassesFilter(unit, profile)
   local filter = profile and profile.filter or "all"
   if filter == "all" then return true end
+  -- The group/guild/friends filter narrows friendly players only; enemy
+  -- players and NPCs are controlled by their own mode toggles.
+  if not SP.IsFriendlyPlayer(unit) then return true end
   if filter == "party" then
     return SP.IsPartyMember(unit)
   elseif filter == "raid" then
@@ -592,9 +611,9 @@ local function UpdateOverlay(unit)
   -- Re-check eligibility and the active filter on every refresh. Filters can
   -- change while these nameplate tokens remain tracked; hide rather than
   -- leaving stale overlays visible. They can show again if the filter changes.
-  if not SP.IsEligiblePlayer(unit, profile) then
+  if not SP.IsEligibleUnit(unit, profile) then
     HideOverlay(overlay)
-    SP.DebugPrint("overlay hidden for " .. unit .. ": not an eligible player")
+    SP.DebugPrint("overlay hidden for " .. unit .. ": not an eligible unit")
     return
   end
   if not SP.PassesFilter(unit, profile) then
@@ -715,7 +734,7 @@ end
 -- or nil when the unit is not an eligible player.
 local function EnsureOverlay(unit)
   local profile = SP.GetProfile()
-  if not SP.IsEligiblePlayer(unit, profile) then return nil end
+  if not SP.IsEligibleUnit(unit, profile) then return nil end
   if not SP.PassesFilter(unit, profile) then
     SP.DebugPrint("overlay skipped for " .. unit .. ": filter=" .. tostring(profile.filter))
     return nil

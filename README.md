@@ -1,6 +1,6 @@
 # Spatial Plates
 
-A lightweight, purely informational World of Warcraft addon (Classic Forever) that adds a small spatial-semantics overlay to **player nameplates** (friendly and hostile) — approximate distance in yards, same-map/map-name indicator, indoors/outdoors, and underwater status — so healers, raid leads, and party members can understand where friendly players are without staring at raid frames.
+A lightweight, purely informational World of Warcraft addon (Classic Forever) that adds a small spatial-semantics overlay to **player and enemy nameplates** — approximate distance in yards, same-map/map-name indicator, indoors/outdoors, and underwater status — so healers, raid leads, and party members can understand where friendly players are without staring at raid frames.
 
 > **Informational only.** The addon code does not call health, power, aura, cooldown, damage, healing, threat, or combat-log APIs; it does not automate decisions or hook insecure combat functions. Secret/unreadable spatial values are omitted or the last readable display is frozen in combat. Calls are guarded and the addon is designed to fail closed where possible, but no Lua addon can guarantee zero errors or taint on every client build; use the live-client checklist before release.
 
@@ -27,12 +27,14 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 
 ## Usage
 
-- Overlays appear on player nameplates (never NPCs or yourself). Which players is controlled by three modes on the **minimap button** (left- or right-click it; drag to move it):
-  - **Global** — every other player, friendly or hostile (on by default, so you can test solo against any player).
+- Which nameplates get an overlay is controlled by five toggles on the **minimap button** (left- or right-click it; drag to move it). All are on by default; any checked mode that matches makes a unit eligible. Yourself and friendly NPCs never get one.
+  - **All friendly players**.
   - **Party / raid members**.
   - **Friends-list friends**.
-  Any checked mode that matches makes a player eligible; with all three off, nothing is shown. The `filter` setting below narrows further.
-- **Distance for players outside your group:** the client only reports exact distance and map for party/raid members, so other players show a coarse range from `CheckInteractDistance`: `<10y`, `<28y`, or `>28y`. Map name, indoors and underwater are not available for them.
+  - **Enemy players** — players who are not friendly (opposite faction, duel/PvP).
+  - **Enemy NPCs** — NPCs you can attack (hostile and neutral mobs, enemy pets).
+  The `filter` setting below narrows **friendly players** only.
+- **Distance for players outside your group:** the client only reports exact distance and map for party/raid members, so other players and NPCs show a coarse range from `CheckInteractDistance`: `<10y`, `<28y`, or `>28y`. Map name, indoors and underwater are not available for them.
 - By default the overlay sits **above** the nameplate and shows `12y | Same map`.
 - Distance appears only when readable **and** you and the unit are on the same map.
 - The location field compares `C_Map.GetBestMapForUnit`: same map displays `Same map`, otherwise it displays the unit's map name. This API is **not subzone-granular**, so the addon does not claim the players share a subzone; the field hides cleanly when map data is unavailable.
@@ -51,8 +53,10 @@ A lightweight, purely informational World of Warcraft addon (Classic Forever) th
 | `/splates indoors [on\|off]` | Toggle indoors/outdoors field |
 | `/splates underwater [on\|off]` | Toggle underwater field |
 | `/splates bearing` | Explain that bearing is unavailable on this client |
-| `/splates filter <all\|party\|raid\|guild\|friends>` | Narrow eligible players further |
-| `/splates global [on\|off]` | Toggle Global mode (all players) |
+| `/splates filter <all\|party\|raid\|guild\|friends>` | Narrow friendly players further |
+| `/splates global [on\|off]` | Toggle All friendly players |
+| `/splates enemyplayers [on\|off]` | Toggle Enemy players |
+| `/splates enemynpcs [on\|off]` | Toggle Enemy NPCs |
 | `/splates party [on\|off]` | Toggle Party / raid mode |
 | `/splates friendslist [on\|off]` | Toggle Friends-list mode |
 | `/splates minimap [on\|off]` | Show/hide the minimap button |
@@ -140,7 +144,7 @@ The Lua suite uses a deliberately small fake WoW API; it has no third-party Lua 
 Mocked Lua tests and static checks can verify control flow, but they do not reproduce the WoW client. **A live Classic Forever client smoke test has not been run in this workspace.** Before release, verify the current interface number and run the checks below in the target client, especially friend-list API behavior and repeated nameplate-token reuse.
 
 1. **Loads cleanly:** `/reload` in and out of combat — no Lua errors.
-2. **Player modes:** with Global on, overlays appear on friendly and hostile players (not NPCs, not yourself) with a coarse `<10y` / `<28y` / `>28y` range; turn Global off from the minimap popup and confirm only party members / friends-list members remain.
+2. **Modes:** with defaults, overlays appear on friendly players, enemy players and attackable NPCs (not friendly NPCs, not yourself) with a coarse `<10y` / `<28y` / `>28y` range outside your group; toggle each mode in the minimap popup and confirm the matching plates appear and disappear.
 3. **Distance:** appears when readable and same-map; hidden otherwise (e.g. different map, or API unavailable).
 4. **Map location:** shows `Same map` / map name (not subzone-level); hides cleanly when map data is unavailable.
 5. **No combat APIs:** grep the code — no health/power/aura/cooldown/threat/combat-log usage.

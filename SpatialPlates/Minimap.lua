@@ -1,6 +1,6 @@
 -- SpatialPlates Minimap.lua
--- Minimap button with a small popup for the player-mode checkboxes
--- (Global / Party / Friends list). Left- or right-click opens the popup,
+-- Minimap button with a small popup for the mode checkboxes (friendly
+-- players, party, friends list, enemy players, enemy NPCs). Left- or right-click opens the popup,
 -- drag moves the button around the minimap edge. No libraries: one plain
 -- Button parented to Minimap. Uses OnMouseUp rather than click registration
 -- so both mouse buttons work without touching secure click handling.
@@ -12,9 +12,11 @@ local ICON = "Interface\\Icons\\INV_Misc_Spyglass_03"
 local RADIUS = 80
 
 local MODES = {
-  { key = "showGlobal", label = "Global (all players)" },
+  { key = "showGlobal", label = "All friendly players" },
   { key = "showParty", label = "Party / raid members" },
   { key = "showFriendsList", label = "Friends-list friends" },
+  { key = "showEnemyPlayers", label = "Enemy players" },
+  { key = "showEnemyNPCs", label = "Enemy NPCs" },
 }
 
 local button, menu
@@ -157,7 +159,7 @@ local function CreateButton()
     if not GameTooltip then return end
     GameTooltip:SetOwner(self, "ANCHOR_LEFT")
     GameTooltip:AddLine("Spatial Plates")
-    GameTooltip:AddLine("Left/Right-click: choose which players get overlays", 1, 1, 1)
+    GameTooltip:AddLine("Left/Right-click: choose which nameplates get overlays", 1, 1, 1)
     GameTooltip:AddLine("Drag: move button", 1, 1, 1)
     GameTooltip:Show()
   end)

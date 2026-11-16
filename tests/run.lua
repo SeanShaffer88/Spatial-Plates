@@ -134,6 +134,7 @@ function UnitIsInMyGuild(unit) local d = units[unit]; return d and d.guild or fa
 function UnitIsVisible(unit) local d = units[unit]; return d and d.visible ~= false or false end
 function UnitClass(unit) local d = units[unit]; return d and d.className or "Mage", d and d.classToken or "MAGE", 8 end
 function UnitIsEnemy(_, unit) local d = units[unit]; return d and d.enemy or false end
+function UnitCanAttack(_, unit) local d = units[unit]; return d and (d.canAttack or d.enemy) or false end
 function UnitDistanceSquared(unit)
   if distanceThrows then error("mock distance error") end
   local d = units[unit]
@@ -229,6 +230,9 @@ setUnit("friend", {
 })
 setUnit("enemy", { isPlayer = true, friendly = false, enemy = true, visible = true, distanceSq = 16, map = 100 })
 setUnit("npc", { isPlayer = false, friendly = true, visible = true, distanceSq = 16, map = 100 })
+setUnit("mob", { isPlayer = false, friendly = false, enemy = true, visible = true, distanceSq = 16, map = 100 })
+setUnit("neutralmob", { isPlayer = false, friendly = false, canAttack = true, visible = true, distanceSq = 16, map = 100 })
+setUnit("critter", { isPlayer = false, friendly = false, canAttack = false, visible = true, distanceSq = 16, map = 100 })
 setUnit("secret-player", { isPlayer = secret, friendly = true })
 setUnit("secret-friend", { isPlayer = true, friendly = secret })
 
@@ -659,16 +663,14 @@ test("UI1 options panel and missing color-picker APIs fail gracefully", function
   expect(pcall(colorButton._scripts.OnClick, colorButton))
 end)
 
-test("MODE1 global/party/friends-list checkboxes control eligibility", function()
+test("MODE1 friendly/party/friends-list checkboxes control friendly players", function()
   resetProfile()
   local p = SP.GetProfile()
-  expect(SP.IsEligiblePlayer("enemy", p), "global mode includes hostile players")
   expect(SP.IsEligiblePlayer("friend", p))
-  expect(not SP.IsEligiblePlayer("npc", p), "NPCs never eligible")
+  expect(not SP.IsEligiblePlayer("npc", p), "friendly NPCs never eligible")
   expect(not SP.IsEligiblePlayer("player", p), "self never eligible")
   p.showGlobal = false
   expect(SP.IsEligiblePlayer("friend", p), "party mode includes party member")
-  expect(not SP.IsEligiblePlayer("enemy", p))
   p.showParty = false
   expect(not SP.IsEligiblePlayer("friend", p), "friend not on friends list")
   friendNames["Alice-Azeroth"] = true
@@ -678,15 +680,35 @@ test("MODE1 global/party/friends-list checkboxes control eligibility", function(
   friendNames["Alice-Azeroth"] = nil
 end)
 
-test("MODE2 turning global mode on creates overlays for already-visible hostile plates", function()
+test("MODE2 turning enemy players on creates overlays for already-visible hostile plates", function()
   resetProfile(); clearOverlays()
-  SP.SetProfileValue("showGlobal", false)
+  SP.SetProfileValue("showEnemyPlayers", false)
   currentPlate = CreateFrame("Frame", "PlateMODE2", UIParent); currentPlate.unit = "enemy"
   fire("NAME_PLATE_UNIT_ADDED", "enemy")
-  expect(SP._overlays.enemy == nil, "enemy skipped while global off")
-  SP.SetProfileValue("showGlobal", true)
-  expect(SP._overlays.enemy and SP._overlays.enemy:IsShown(), "enemy overlay appears after enabling global")
+  expect(SP._overlays.enemy == nil, "enemy skipped while enemy players off")
+  SP.SetProfileValue("showEnemyPlayers", true)
+  expect(SP._overlays.enemy and SP._overlays.enemy:IsShown(), "enemy overlay appears after enabling enemy players")
   clearOverlays()
+end)
+
+test("MODE3 enemy players and enemy NPCs have independent toggles", function()
+  resetProfile()
+  local p = SP.GetProfile()
+  expect(SP.IsEligibleUnit("enemy", p), "enemy players on by default")
+  expect(SP.IsEligibleUnit("mob", p), "hostile NPCs on by default")
+  expect(SP.IsEligibleUnit("neutralmob", p), "attackable neutral NPCs count as enemies")
+  expect(not SP.IsEligibleUnit("critter", p), "non-attackable NPCs never show")
+  expect(not SP.IsEligibleUnit("npc", p), "friendly NPCs never show")
+  p.showEnemyPlayers = false
+  expect(not SP.IsEligibleUnit("enemy", p))
+  expect(SP.IsEligibleUnit("mob", p), "NPC toggle independent of player toggle")
+  p.showEnemyNPCs = false
+  expect(not SP.IsEligibleUnit("mob", p))
+  p.showEnemyPlayers = true
+  p.showGlobal = false; p.showParty = false; p.showFriendsList = false
+  expect(SP.IsEligibleUnit("enemy", p), "friendly modes do not affect enemy players")
+  p.filter = "guild"
+  expect(SP.PassesFilter("enemy", p), "group/guild filter narrows friendly players only")
 end)
 
 test("DIST3 players outside the group fall back to coarse interact-range buckets", function()
