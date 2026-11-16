@@ -2,7 +2,7 @@
 ## Title: Spatial Plates
 ## Notes: Non-combat spatial overlay for player nameplates (distance, subzone, indoors/outdoors, underwater). Informational only — never reads health, power, auras, cooldowns, damage, healing, or threat. Degrades gracefully when a value is secret/unreadable.
 ## Author: Spatial Plates
-## Version: 1.3.1
+## Version: 1.4.0
 ## IconTexture: Interface\Icons\INV_Misc_Spyglass_03
 ## SavedVariables: SpatialPlatesDB
 ## X-Category: Nameplates
