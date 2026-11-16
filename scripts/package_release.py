@@ -17,6 +17,7 @@ ADDON_FILES = (
     "Presets.lua",
     "Appearance.lua",
     "Core.lua",
+    "Minimap.lua",
 )
 PACKAGE_FILES = ADDON_FILES + ("LICENSE",)
 
