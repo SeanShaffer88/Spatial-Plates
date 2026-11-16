@@ -8,7 +8,8 @@
 SpatialPlates = SpatialPlates or {}
 local SP = SpatialPlates
 
-local ICON = "Interface\\Icons\\INV_Misc_Spyglass_03"
+-- The addon's own icon (Media/Icon.tga, drawn by scripts/make_icon.py).
+local ICON = "Interface\\AddOns\\SpatialPlates\\Media\\Icon"
 local RADIUS = 80
 local WINDOW_NAME = "SpatialPlates_SettingsWindow"
 
@@ -356,7 +357,6 @@ local function CreateButton()
   icon:SetTexture(ICON)
   icon:SetWidth(20); icon:SetHeight(20)
   icon:SetPoint("TOPLEFT", b, "TOPLEFT", 7, -5)
-  icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 
   local border = b:CreateTexture(nil, "OVERLAY")
   border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")

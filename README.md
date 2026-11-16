@@ -126,6 +126,7 @@ Enable **Auto-detect nameplate addons** in the options panel to allow read-only 
 | `SpatialPlates/Core.lua` | Nameplate detection, eligibility, field computation, visibility, ticker, cleanup |
 | `SpatialPlates/Range.lua` | Estimated range steps from the player's spellbook and interaction distances |
 | `SpatialPlates/Minimap.lua` | Minimap button and the settings window |
+| `SpatialPlates/Media/Icon.tga` | Addon icon (AddOns list and minimap button); regenerate with `python3 scripts/make_icon.py` |
 
 Load order in `SpatialPlates/SpatialPlates.toc` is `Config.lua → Presets.lua → Appearance.lua → Range.lua → Core.lua → Minimap.lua`. All top-level code only defines tables/functions; initialization happens on `ADDON_LOADED`.
 
